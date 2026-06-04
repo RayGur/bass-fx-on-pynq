@@ -27,9 +27,9 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 | codec | ADAU1761(48 kHz, 24-bit pad 32, I2S, I2C 設定) |
 
 - **Ray 板 SSH**:`192.168.2.99`(user: xilinx)
-  - 註:此板原為 overlay driver 開發板,現全力轉做 bass。Phase 0 須**重刷為標準 PYNQ image**(原環境為 Ubuntu 不依賴 PYNQ,與本專案需求不同)。
+  - 註:已確認為標準 PYNQ 2.5 image,**無需重刷**。
 - **Claire 板 SSH**:`192.168.2.99`(user: xilinx)
-- **PYNQ image 版本**:`<TODO,Phase 0 對齊後填>`
+- **PYNQ image 版本**:`2.5 (Glasgow)`,基於 Ubuntu 18.04
 - **同步方式**:本機寫檔 → scp 同步到板子 → build / 測試在 Ray 端手動執行
 
 ## 工具版本(凍結)
@@ -77,7 +77,13 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 
 ## 目前進度
 
-- 🔲 **Phase 0**:環境與硬體 sanity check(重刷 PYNQ image、對齊環境、JB62 直插 `bypass()` 出聲)— 尚未開始
+- 🟡 **Phase 0**:環境與硬體 sanity check — 進行中
+  - ✅ PYNQ 2.5 image 確認(無需重刷)
+  - ✅ base overlay 載入正常
+  - ✅ line-in 收訊正常(touch 測試)
+  - ✅ HP-out 輸出正常(bypass + EarPods 有聲,需 `select_line_in()`)
+  - ✅ stereo 兩聲道確認
+  - 🔲 JB62 實機接線驗證(待購 6.3→3.5 線,明日完成)
 - 🔲 Phase 1:最小 IP(passthrough)跑通自訂路徑
 - 🔲 Phase 2:distortion(hard clipping + AXI-Lite threshold/gain)
 - 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
