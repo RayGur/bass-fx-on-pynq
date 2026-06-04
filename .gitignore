@@ -1,0 +1,55 @@
+# FPGA bitstream & hardware handoff (binary, no diff value)
+*.bit
+*.hwh
+*.bin
+*.mcs
+
+# Vivado project files (reproducible from tcl)
+*.xpr
+*.xsa
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.srcs/impl_*/
+*.gen/
+vivado*.jou
+vivado*.log
+vivado_pid*.str
+webtalk*.jou
+webtalk*.log
+
+# Vitis HLS project files
+*.ap/
+solution*/
+.autopilot/
+*.prj/
+
+# Vitis workspace
+RemoteSystemsTempFiles/
+.metadata/
+.Xil/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
