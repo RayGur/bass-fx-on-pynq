@@ -29,6 +29,16 @@
 
 效果運算核心。與外殼(PIO / DMA)解耦,A、B 階段共用同一份。外殼負責搬資料,本函式只負責運算。
 
+### HLS 檔案結構(見 D11)
+
+| 檔案 | 責任人 | 說明 |
+|------|--------|------|
+| `hls/effect_ip/process_sample.cpp` | Ray | 薄整合層,呼叫 distortion / wobble;HLS 合成入口 |
+| `hls/effect_ip/distortion.cpp` | Ray | distortion hard clipping 演算法 |
+| `hls/effect_ip/wobble.cpp` | Claire | wobble IIR + LFO 演算法 |
+
+三個檔案合成成**單一 IP**,各自負責各自的 .cpp,Git 衝突最小化。
+
 ```c
 // 候選簽章 — 處理單一 stereo sample
 // 參數由 AXI-Lite 傳入;開關來自 AXI GPIO;運算核心不接觸 AXI/stream 細節
@@ -52,28 +62,50 @@
 
 ---
 
-## 3. AXI-Lite 位址表 🔲(Phase 1 後填)
+## 3. AXI-Lite 位址表 ✅(Phase 1 完成)
 
 PS 寫入 → PL 即時讀取,音訊不中斷。
 
-### 這些 offset 從哪來、何時填
+來源：`xprocess_sample_hw.h`（HLS 產出）+ `.hwh`（Vivado 整合後）
 
-byte offset **不是自行決定的**,是 Vitis HLS 合成 IP 後自動產生的。填寫時機與步驟:
+### Effect IP（process_sample_0）
 
-1. **Phase 1**:在 HLS 將參數以 `#pragma HLS INTERFACE s_axilite port=<參數>` 宣告並合成 IP。
-2. HLS 產生的 driver header(`x<ip_name>_hw.h` 之類)中會列出每個參數的位址定義(如 `XEFFECT_..._ADDR_THRESHOLD_DATA`)。
-3. 或在 Vivado 整合後開 **Address Editor**(參考報告第 8 頁那張圖),查 IP 的 base address;參數 offset 即 HLS header 中的值。
-4. 把 base address + 各參數 offset 抄進下表並凍結。
+> **IP base address：`0x4002_0000`**
 
 | 參數 | 方向 | byte offset | 說明 |
 |------|------|-------------|------|
-| `threshold` | PS→PL | `<TODO Phase 1>` | distortion 切點 |
-| `gain` | PS→PL | `<TODO Phase 1>` | distortion 輸入增益 |
-| `lfo_rate` | PS→PL | `<TODO Phase 1>` | wobble 掃動速率 |
-| `lfo_depth` | PS→PL | `<TODO Phase 1>` | wobble 掃動範圍 |
-| (ap_ctrl / control) | — | `<TODO Phase 1>` | HLS 自動產生的控制暫存器 |
+| ap_ctrl | R/W | `0x00` | bit0=ap_start, bit1=ap_done, bit2=ap_idle |
+| `in_l` | PS→PL | `0x10` | 左聲道輸入，24-bit Q1.23，低 24 bits 有效 |
+| `in_r` | PS→PL | `0x18` | 右聲道輸入，24-bit Q1.23，低 24 bits 有效 |
+| `out_l` | PL→PS | `0x20` | 左聲道輸出，24-bit Q1.23（read only） |
+| `out_l_ap_vld` | PL→PS | `0x24` | out_l 有效旗標（read, clear on read） |
+| `out_r` | PL→PS | `0x30` | 右聲道輸出，24-bit Q1.23（read only） |
+| `out_r_ap_vld` | PL→PS | `0x34` | out_r 有效旗標（read, clear on read） |
+| `dist_en` | PS→PL | `0x40` | distortion 開關，bit0 |
+| `wobble_en` | PS→PL | `0x48` | wobble 開關，bit0 |
+| `threshold` | PS→PL | `0x50` | distortion 切點（32-bit int） |
+| `gain` | PS→PL | `0x58` | distortion 輸入增益（32-bit int） |
+| `lfo_rate` | PS→PL | `0x60` | wobble 掃動速率（32-bit int） |
+| `lfo_depth` | PS→PL | `0x68` | wobble 掃動範圍（32-bit int） |
+| `state` | PS→PL | `0x70` | 跨 sample 狀態（Phase 1 為 placeholder） |
 
-> IP base address(整體):`<TODO Phase 1>`
+### AXI GPIO
+
+| IP 實例 | base address | 功能 |
+|---------|-------------|------|
+| `axi_gpio_0` | `0x4000_0000` | GPIO=sw[1:0]（input），GPIO2=btn[3:0]（input） |
+| `axi_gpio_1` | `0x4001_0000` | GPIO=led[3:0]（output） |
+
+> AXI GPIO 暫存器 offset：DATA=0x000（ch1），DATA2=0x008（ch2），TRI=0x004，TRI2=0x00C
+
+### AXI IIC（ADAU1761 I2C 配置）
+
+| IP 實例 | base address | 功能 |
+|---------|-------------|------|
+| `axi_iic_0` | **🔲 待填（rebuild 後從 Vivado Address Editor 取得）** | ADAU1761 I2C 配置（codec PLL + 暫存器初始化） |
+
+> 硬體接腳：SCL = U9，SDA = T9（PL IO，LVCMOS33，需 PULLUP）  
+> libaudio.so 的 `iic_index` 對應此 AXI IIC 在 Linux /dev/i2c-X 的編號（rebuild + 上板後確認）
 
 ---
 
@@ -119,4 +151,5 @@ byte offset **不是自行決定的**,是 Vitis HLS 合成 IP 後自動產生的
 
 | 版本 | 變更 |
 |------|------|
-| 初版 | GPIO/LED 接腳與功能、Q 格式定案;AXI-Lite offset 與 process_sample 簽章待後續 Phase |
+| 初版 | GPIO/LED 接腳與功能、Q 格式定案；AXI-Lite offset 與 process_sample 簽章待後續 Phase |
+| Phase 1 | AXI-Lite offset 定案（from HLS xprocess_sample_hw.h）；AXI GPIO base address 定案；加入 AXI IIC 條目（address 待 rebuild 後填入） |

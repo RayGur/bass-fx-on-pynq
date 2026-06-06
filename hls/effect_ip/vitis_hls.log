@@ -1,0 +1,47 @@
+INFO: [HLS 200-10] Running 'C:/Xilinx/Vitis_HLS/2022.2/bin/unwrapped/win64.o/vitis_hls.exe'
+INFO: [HLS 200-10] For user 'ray93' on host 'galore' (Windows NT_amd64 version 6.2) on Sat Jun 06 23:30:01 +0800 2026
+INFO: [HLS 200-10] In directory 'C:/Users/ray93/EE/bass-fx-on-pynq/hls/effect_ip'
+Sourcing Tcl script 'C:/Users/ray93/EE/bass-fx-on-pynq/hls/effect_ip/effect_ip_prj/solution1/export.tcl'
+INFO: [HLS 200-1510] Running: source C:/Users/ray93/EE/bass-fx-on-pynq/hls/effect_ip/effect_ip_prj/solution1/export.tcl
+INFO: [HLS 200-1510] Running: open_project effect_ip_prj 
+INFO: [HLS 200-10] Opening project 'C:/Users/ray93/EE/bass-fx-on-pynq/hls/effect_ip/effect_ip_prj'.
+INFO: [HLS 200-1510] Running: set_top process_sample 
+INFO: [HLS 200-1510] Running: add_files wobble.cpp 
+INFO: [HLS 200-10] Adding design file 'wobble.cpp' to the project
+INFO: [HLS 200-1510] Running: add_files distortion.cpp 
+INFO: [HLS 200-10] Adding design file 'distortion.cpp' to the project
+INFO: [HLS 200-1510] Running: add_files process_sample.cpp 
+INFO: [HLS 200-10] Adding design file 'process_sample.cpp' to the project
+INFO: [HLS 200-1510] Running: add_files effect_ip.h 
+INFO: [HLS 200-10] Adding design file 'effect_ip.h' to the project
+INFO: [HLS 200-1510] Running: add_files -tb tb_process_sample.cpp -cflags -Wno-unknown-pragmas -csimflags -Wno-unknown-pragmas 
+INFO: [HLS 200-10] Adding test bench file 'tb_process_sample.cpp' to the project
+INFO: [HLS 200-1510] Running: open_solution solution1 -flow_target vivado 
+INFO: [HLS 200-10] Opening solution 'C:/Users/ray93/EE/bass-fx-on-pynq/hls/effect_ip/effect_ip_prj/solution1'.
+INFO: [SYN 201-201] Setting up clock 'default' with a period of 10ns.
+INFO: [HLS 200-1611] Setting target device to 'xc7z020-clg400-1'
+INFO: [HLS 200-1505] Using flow_target 'vivado'
+Resolution: For help on HLS 200-1505 see www.xilinx.com/cgi-bin/docs/rdoc?v=2022.2;t=hls+guidance;d=200-1505.html
+INFO: [HLS 200-1464] Running solution command: config_interface -m_axi_latency=0
+INFO: [HLS 200-1510] Running: set_part xc7z020-clg400-1 
+INFO: [HLS 200-1510] Running: create_clock -period 10 -name default 
+INFO: [HLS 200-1510] Running: config_interface -m_axi_latency 0 
+INFO: [HLS 200-1510] Running: source ./effect_ip_prj/solution1/directives.tcl
+INFO: [HLS 200-1510] Running: set_directive_top -name process_sample process_sample 
+INFO: [HLS 200-1510] Running: export_design -rtl verilog -format ip_catalog 
+Running Dispatch Server on port: 59886
+INFO: [IMPL 213-8] Exporting RTL as a Vivado IP.
+
+****** Vivado v2022.2 (64-bit)
+  **** SW Build 3671981 on Fri Oct 14 05:00:03 MDT 2022
+  **** IP Build 3669848 on Fri Oct 14 08:30:02 MDT 2022
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+
+source run_ippack.tcl -notrace
+INFO: [IP_Flow 19-234] Refreshing IP repositories
+INFO: [IP_Flow 19-1704] No user IP repositories specified
+INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'C:/Xilinx/Vivado/2022.2/data/ip'.
+INFO: [Common 17-206] Exiting Vivado at Sat Jun  6 23:30:25 2026...
+INFO: [HLS 200-802] Generated output file effect_ip_prj/solution1/impl/export.zip
+INFO: [HLS 200-111] Finished Command export_design CPU user time: 1 seconds. CPU system time: 1 seconds. Elapsed time: 12.228 seconds; current allocated memory: 8.102 MB.
+INFO: [HLS 200-112] Total CPU user time: 2 seconds. Total CPU system time: 1 seconds. Total elapsed time: 24.462 seconds; peak allocated memory: 685.531 MB.

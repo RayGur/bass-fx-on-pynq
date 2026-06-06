@@ -126,10 +126,63 @@
 
 ---
 
+## D11. HLS 檔案結構:同一個 IP,拆成三個 .cpp
+
+- **背景**:distortion 由 Ray 負責,wobble 由 Claire 負責,兩人平行開發。Claire 對 Git 較不熟悉,若兩人改同一個檔案容易產生 merge conflict。
+- **選項**:
+  - A) 同一個 IP、同一個 `process_sample.cpp`(兩人共改)
+  - B) 同一個 IP、拆成 `distortion.cpp` + `wobble.cpp` + `process_sample.cpp` 薄包裝層
+  - C) 兩個獨立 IP(各自 HLS 專案、各自 AXI-Lite)
+- **決定**:選 B。
+- **理由**:
+  - Claire 只需 pull/push 自己的 `wobble.cpp`,Git 操作最簡單,幾乎無 conflict。
+  - HLS 合成仍以 `process_sample.cpp` 為入口點,export 成單一 IP,Vivado block design 不增加複雜度。
+  - 相比 C,block design 維持一條 AXI-Lite、一個 IP,Phase 5 串接邏輯也在 HLS 內部完成,不需在 block design 繞線。
+- **檔案責任歸屬**:
+  - `hls/effect_ip/process_sample.cpp` — Ray 維護(薄薄的整合層,呼叫兩個子效果)
+  - `hls/effect_ip/distortion.cpp` — Ray 全責
+  - `hls/effect_ip/wobble.cpp` — Claire 全責
+- **參考**:C 語言多檔編譯慣例(main.c 呼叫子模組函式,編譯成一個 binary);分工設計討論(2026-06-06)。
+
+---
+
+---
+
+## D12. MCLK 到 IO 的佈線方式：ODDR
+
+- **背景**：clk_wiz 產生 10 MHz MCLK 給 ADAU1761（接腳 U5）。FPGA 的 clock network 不能直接驅動 IO pin，Vivado 會報 `IO Clock Placer failed`。
+- **選項**：
+  - A) ODDR primitive：把 clock 訊號轉成 data output 再驅動 IO（標準做法）
+  - B) 直接接 BD port（`-type clk`）+ `CLOCK_DEDICATED_ROUTE FALSE`
+  - C) 在 BD 中直接拉外部 port，不加任何 constraint（可能 build 失敗）
+- **決定**：選 A，實作獨立模組 `rtl/clk_oddr.v`，在 BD 中以 module reference 加入。
+- **理由**：
+  - B 需要找到 post-synthesis net 名稱才能在 XDC 生效（hierarchical path 複雜，容易出錯）；
+  - A 為 Xilinx 7 系列官方推薦做法，明確且不依賴 net 名稱。
+  - 實測：`audio_clk_10MHz` 成功 place 到 U5（Bank 13, IOB_X0Y11），Bitstream 生成 OK。
+- **附帶發現**：`audio_codec_ctrl` BD 產生的 wrapper port 名稱帶 `_0` 後綴（`bclk_0`, `lrclk_0` 等），XDC 必須對齊此命名。
+- **參考**：Xilinx UG471（ODDR primitive）；參考專案（Audio-Lab-PYNQ）直接接 BD port 但未遇相同錯誤（可能版本差異或時序容忍）。
+
+---
+
+## D13. ADAU1761 I2C 路徑：需 AXI IIC IP 在 PL
+
+- **背景**：`AudioADAU1761.configure()` 呼叫 `libaudio.so` 的 `config_audio_pll(iic_index=1)`，預期透過 I2C 送 PLL 設定給 codec，但該函式無限 hang。
+- **診斷**：
+  - `i2cdetect -y 0` 與 `-y 1` 均找不到 codec（I2S 位址 0x3B）。
+  - UIO device `audio-codec-ctrl` 有找到（uio_index=0）。
+  - libaudio.so 的 I2C 實作（`i2cps.c`）直接存取 Zynq PS IIC 控制器 MMIO；但 ADAU1761 的 SDA/SCL 實際上接到 **PL 腳 U9/T9**（非 PS MIO），需 AXI IIC IP 在 PL 中橋接。
+  - 確認依據：參考專案（Audio-Lab-PYNQ）XDC 明確標示 `IIC_1_scl_io @ U9`、`IIC_1_sda_io @ T9`，且 BD 中有 `axi_iic:2.0` IP。
+- **決定**：在 `bass_fx_bd` block design 中加入 `axi_iic:2.0`，連接 PS AXI Interconnect，IIC port 接外部腳 U9/T9；XDC 加 PULLUP 與 IOSTANDARD 設定。
+- **待補**：AXI IIC base address（Vivado Address Editor 重新 build 後確認）→ 填入 `docs/INTERFACE.md`。
+- **影響**：需重新 Generate Bitstream；`pio_loop.py` 的 `init_audio()` 使用 `iic_index=1` 或 AXI IIC 對應 bus index（待板上確認）。
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
+- AXI IIC bus index（確認 AXI IIC 在 /dev/i2c-X 的編號，Phase 1 修復後）。
 - 中間運算型別寬度(Phase 2/3)。
 - `process_sample()` 跨 sample 狀態結構(Phase 2/3)。
-- AXI-Lite byte offset(Phase 1,HLS 合成後)。
 - low/high 參數的實際數值(Phase 4,調出好聽範圍)。
 - wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。

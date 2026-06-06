@@ -77,14 +77,26 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 
 ## 目前進度
 
-- 🟡 **Phase 0**:環境與硬體 sanity check — 進行中
+- ✅ **Phase 0**:環境與硬體 sanity check — 完成
   - ✅ PYNQ 2.5 image 確認(無需重刷)
   - ✅ base overlay 載入正常
   - ✅ line-in 收訊正常(touch 測試)
   - ✅ HP-out 輸出正常(bypass + EarPods 有聲,需 `select_line_in()`)
   - ✅ stereo 兩聲道確認
-  - 🔲 JB62 實機接線驗證(待購 6.3→3.5 線,明日完成)
-- 🔲 Phase 1:最小 IP(passthrough)跑通自訂路徑
+  - ✅ JB62 實機接線驗證完成
+- 🟡 **Phase 1**:最小 IP(passthrough)跑通自訂路徑 — **進行中，卡在 AXI IIC**
+  - ✅ 實作計畫書完成（`docs/phase1.md`）
+  - ✅ HLS 全部 source 撰寫完成（`effect_ip.h`、三個 .cpp、testbench、tcl）
+  - ✅ Vitis HLS C Sim PASS、synthesis 完成、export IP 完成
+  - ✅ AXI-Lite offset 填入 `docs/INTERFACE.md`
+  - ✅ Vivado BD 完成（含 clk_oddr ODDR 模組解決 MCLK IO 問題）
+  - ✅ Bitstream 生成成功
+  - ✅ Effect IP 板上 sanity check PASS（`run_effect(0.5, -0.5)` 回傳正確值）
+  - ✅ `pio_loop.py` 完成（含 codec init、batch process 函式）
+  - 🔴 **Blocker**：`AudioADAU1761.configure()` 無限 hang
+    - 原因：ADAU1761 I2C 走 PL 腳（U9=SCL, T9=SDA），需 **AXI IIC IP** 在 BD 內；目前 BD 缺少此 IP
+    - 下一步：Vivado BD 加入 `axi_iic:2.0`，連接 U9/T9，重新 build bitstream
+    - 詳見 `docs/decisions.md` D13
 - 🔲 Phase 2:distortion(hard clipping + AXI-Lite threshold/gain)
 - 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
 - 🔲 Phase 4:按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
@@ -101,6 +113,7 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 |-----------|--------|
 | 整體架構、所有 Phase、Exit Criteria | `docs/project_plan.md` |
 | 介面合約(函式簽章 / AXI-Lite 位址 / GPIO bit) | `docs/INTERFACE.md` |
+| Phase 1 細步驟・checklist | `docs/phase1.md` |
 | 各 Phase 細步驟 | `docs/phaseN.md`(做到該 Phase 才生成) |
 | 設計決策紀錄 | `docs/decisions.md` |
 

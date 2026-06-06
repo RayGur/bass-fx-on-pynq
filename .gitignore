@@ -4,7 +4,7 @@
 *.bin
 *.mcs
 
-# Vivado project files (reproducible from tcl)
+# Vivado project output (reproducible from block design / tcl)
 *.xpr
 *.xsa
 *.runs/
@@ -12,24 +12,26 @@
 *.hw/
 *.ip_user_files/
 *.sim/
-*.srcs/impl_*/
 *.gen/
+vivado/
 vivado*.jou
 vivado*.log
 vivado_pid*.str
 webtalk*.jou
 webtalk*.log
+hd_visual/
+.Xil/
 
-# Vitis HLS project files
-*.ap/
-solution*/
-.autopilot/
-*.prj/
+# Vitis HLS project output (reproducible from run_hls.tcl)
+hls/effect_ip/effect_ip_prj/
+hls/**/.autopilot/
+hls/**/*.ap/
+hls/**/solution*/
+hls/**/*.prj/
 
 # Vitis workspace
 RemoteSystemsTempFiles/
 .metadata/
-.Xil/
 
 # Python
 __pycache__/
@@ -41,6 +43,10 @@ dist/
 build/
 .env
 .venv/
+
+# External reference repos (cloned locally, not part of this project)
+relevant project/
+pynq_official/
 
 # OS
 .DS_Store
