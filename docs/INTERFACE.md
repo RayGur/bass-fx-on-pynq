@@ -102,10 +102,11 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 
 | IP 實例 | base address | 功能 |
 |---------|-------------|------|
-| `axi_iic_0` | **🔲 待填（rebuild 後從 Vivado Address Editor 取得）** | ADAU1761 I2C 配置（codec PLL + 暫存器初始化） |
+| `axi_iic_0` | **`0x4080_0000`** | ADAU1761 I2C 配置（codec PLL + 暫存器初始化） |
 
 > 硬體接腳：SCL = U9，SDA = T9（PL IO，LVCMOS33，需 PULLUP）  
-> libaudio.so 的 `iic_index` 對應此 AXI IIC 在 Linux /dev/i2c-X 的編號（rebuild + 上板後確認）
+> **注意**：PYNQ 2.5 HWH parser 不自動建 DT entry，`/dev/i2c-X` 不會出現。  
+> 實際存取方式：`pynq.lib.iic.AxiIIC`（直接操作 MMIO），搭配 `Overlay(..., ignore_version=True)`（詳見 D14）。
 
 ---
 
@@ -152,4 +153,4 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 | 版本 | 變更 |
 |------|------|
 | 初版 | GPIO/LED 接腳與功能、Q 格式定案；AXI-Lite offset 與 process_sample 簽章待後續 Phase |
-| Phase 1 | AXI-Lite offset 定案（from HLS xprocess_sample_hw.h）；AXI GPIO base address 定案；加入 AXI IIC 條目（address 待 rebuild 後填入） |
+| Phase 1 | AXI-Lite offset 定案（from HLS xprocess_sample_hw.h）；AXI GPIO base address 定案；AXI IIC base address 定案（`0x40800000`）；PYNQ 2.5 DT 限制與 AxiIIC 存取方式補充 |

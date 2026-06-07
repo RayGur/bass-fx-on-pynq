@@ -165,21 +165,21 @@ overlay = Overlay("bass_fx.bit")
 - [x] 加入 `clk_oddr`（RTL module reference，解決 MCLK → IO 的 clock placer 問題）
 - [x] Address Editor 取得 Effect IP base address，更新 `docs/INTERFACE.md`
 - [x] Validate Design 通過
-- [ ] **[下一步]** 加入 `axi_iic:2.0`，連接 U9(SCL)/T9(SDA)（見 D13）
-- [ ] axi_iic base address 填入 `docs/INTERFACE.md`
+- [x] 加入 `axi_iic:2.1`，連接 U9(SCL)/T9(SDA)，XDC 加 PULLUP（見 D14）
+- [x] axi_iic base address `0x40800000` 填入 `docs/INTERFACE.md`
 
 ### Step C — 產生 Bitstream
 - [x] Generate Bitstream 成功（含 ODDR + 修正後的 XDC port 名稱 `bclk_0` 等）
+- [x] 加入 AXI IIC 後重新 Generate Bitstream 成功
 - [x] `bass_fx.bit` + `bass_fx.hwh` 同名成對，位於板上 `/home/xilinx/jupyter_notebooks/bass_fx/`
-- [ ] **[下一步]** 加入 AXI IIC 後重新 Generate Bitstream
 
 ### Step D — 上板確認
-- [x] Overlay 載入正常，ip_dict 含全部 4 個 IP
+- [x] Overlay 載入正常，ip_dict 含全部 4 個 IP（含 axi_iic_0）
 - [x] Effect IP sanity check PASS：`run_effect(0.5, -0.5)` → `(0.5000, -0.5000)`
-- [ ] **[Blocker]** codec `configure()` hang（原因：缺 AXI IIC；詳見 D13）
-- [ ] JB62 直插 line-in，接 amp，確認聲音穿透
-- [ ] 主觀聽感與 `bypass()` 一致
-- [ ] **Phase 1 Exit Criteria 通過** → 通知 Claire 可開始 Phase 3
+- [x] codec configure() hang 已解（monkey-patch + AxiIIC 直接初始化；詳見 D14）
+- [x] JB62 直插 line-in，接 amp，聲音穿透確認（純 Python MMIO，有 dropout，MVP 可接受；詳見 D15）
+- [x] 主觀聽感確認（有效果 passthrough，音質 MVP 等級；Phase 6 DMA 升級後修）
+- [x] **Phase 1 Exit Criteria 通過** → Claire 可開始 Phase 3
 
 ---
 
@@ -200,8 +200,19 @@ overlay = Overlay("bass_fx.bit")
 ### P3. AudioADAU1761.configure() 無限 hang
 - **症狀**：`init_audio()` 執行超過 3 分鐘不返回
 - **原因**：ADAU1761 I2C 走 PL 腳（U9/T9），需 AXI IIC IP；`libaudio.so` 的 `config_audio_pll()` 在等 codec PLL lock，但因缺少 AXI IIC，I2C 訊號送不到 codec
-- **解法**：BD 加入 `axi_iic:2.0`，接 U9/T9，rebuild bitstream
-- **狀態**：🔴 **待修復（下一步）**
+- **解法（實際採用）**：
+  1. BD 加入 `axi_iic:2.1`，接 U9/T9，XDC 加 PULLUP，rebuild bitstream
+  2. PYNQ 2.5 HWH parser 不建 DT entry → `/dev/i2c-X` 不出現 → 改用 `pynq.lib.iic.AxiIIC` 直接操作 MMIO
+  3. `AudioADAU1761.configure()` 在 `__init__` 中自動呼叫且會 hang → 在 `Overlay()` 前 monkey-patch 為空實作，略過 libaudio I2C 路徑
+  4. 自行撰寫 `init_codec_via_axiic()` 完成 ADAU1761 初始化（PLL + 暫存器 + select_line_in）
+- **狀態**：✅ **已解決（詳見 D14）**
+
+### P4. libaudio.record() 導致 kernel crash 重開機
+- **症狀**：呼叫 `audio.record()` 後約 3 秒，ARM 總線錯誤，板子重啟
+- **原因**：`libaudio.record()` 對 `/dev/uio0` 執行 `mmap(size=audio_mmap_size)` 但 size 與實際 UIO 裝置不符 → bus error → kernel panic
+- **解法**：棄用 libaudio record/play，改用純 Python 直接輪詢 `audio_ip.mmio.array`（numpy mmap）實作 `py_record()` / `py_play()`
+- **技術債**：Python 輪詢 ~20-30μs/iter，I2S frame 20.8μs，會掉 sample，音質差。這是 MVP 暫時方案；Phase 6 AXI DMA 升級後根本解決
+- **狀態**：✅ **已解決（詳見 D15）**
 
 ---
 

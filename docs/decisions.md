@@ -179,9 +179,36 @@
 
 ---
 
+---
+
+## D14. PYNQ 2.5 不為 AXI IIC 建 DT entry：改用 AxiIIC Python driver
+
+- **背景**：BD 加入 `axi_iic:2.0`，XDC 接 U9/T9，硬體正確。但 overlay 載入後 `i2cdetect -l` 看不到新的 bus；`/sys/kernel/config/device-tree/overlays/` 為空；`i2c-xiic` kernel module 未載入。
+- **原因**：PYNQ 2.5 的 HWH parser 為特定 IP 自動建立 device tree overlay，但不包含 `axi_iic`。沒有 DT entry → kernel 不認識這塊硬體 → `/dev/i2c-X` 不出現 → `libaudio.so` 無法送 I2C 指令。另：IP 版本 2.1 vs `AxiIIC.bindto = ['xilinx.com:ip:axi_iic:2.0']`，需 `ignore_version=True`。
+- **決定**：
+  1. `Overlay(..., ignore_version=True)`
+  2. `AudioADAU1761.configure()` 在 Overlay 載入前 monkey-patch，跳過 libaudio I2C 呼叫
+  3. 新增 `init_codec_via_axiic(ol)`：用 `ol.axi_iic_0.send()` 直接操作 AXI IIC MMIO 暫存器，重現完整初始化序列
+  4. 預先開啟 HP output mixer
+- **技術原理**：`XIic_Send(mmio_vaddr, ...)` 透過 `libiic.so` 直接寫 AXI IIC TX FIFO，完全繞過 Linux i2c subsystem。
+- **AXI IIC base address**：`0x40800000`（已填入 `docs/INTERFACE.md`）
+
+---
+
+## D15. libaudio.record()/play() 導致 kernel crash：純 Python MMIO 作為 MVP 暫解
+
+- **背景**：codec 初始化後呼叫 `audio.record()`，不到 3 秒 kernel 重開機。
+- **原因**：`libaudio.record()` 呼叫 `mmap(/dev/uio0, audio_mmap_size)`，若 `audio_mmap_size`（來自 HWH 的 IP 位址範圍）與 UIO device 實際允許大小不符，存取超出範圍會觸發 ARM bus error → kernel panic。
+- **決定（MVP 暫解）**：完全繞過 libaudio 的 record/play，改用純 Python MMIO 直接存取 `audio_codec_ctrl` 暫存器：
+  - `py_record()`：polling `I2S_STATUS_REG`，每 frame 讀 RX_L / RX_R
+  - `py_play()`：polling `I2S_STATUS_REG`，每 frame 寫 TX_L / TX_R
+- **已知限制**：Python loop ~20–30 μs/次，I2S frame 每 20.8 μs 一個，Python 跟不上 48kHz → 掉 sample → 音質差（破碎）。**這是 MVP 可接受的暫時狀態**；Phase 6 升級 AXI DMA + 雙緩衝 + 中斷後，音訊搬運改由 DMA 硬體負責，此問題根本解決。
+- **未影響**：HLS Effect IP、AXI-Lite 控制路徑完全不受影響，Phase 2–5 照計畫進行。
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
-- AXI IIC bus index（確認 AXI IIC 在 /dev/i2c-X 的編號，Phase 1 修復後）。
 - 中間運算型別寬度(Phase 2/3)。
 - `process_sample()` 跨 sample 狀態結構(Phase 2/3)。
 - low/high 參數的實際數值(Phase 4,調出好聽範圍)。

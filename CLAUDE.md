@@ -9,10 +9,13 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 **Claude Code 只負責程式碼層**,以下由 Ray 手動執行,Claude Code 不碰:
 
 - ❌ 不執行 Vivado / Vitis HLS(build、合成、bitstream 生成由 Ray 手動跑 GUI/tcl)
-- ❌ 不 SSH 上板、不在板子上執行(學校板子有權限限制)
 - ❌ 不做實機音訊測試
 
-**Claude Code 負責**:寫/改 HLS C source、PS 端 C / Python、HLS testbench、文件。產出後交給 Ray build、上板、實測。需要在板子上跑的事,整理成 checklist 交給 Ray。
+**Claude Code 可以**:
+
+- ✅ SSH 上板執行指令(`ssh xilinx@192.168.2.99`)
+
+**Claude Code 負責**:寫/改 HLS C source、PS 端 C / Python、HLS testbench、文件;必要時 SSH 上板執行與驗證。
 
 ---
 
@@ -84,19 +87,14 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - ✅ HP-out 輸出正常(bypass + EarPods 有聲,需 `select_line_in()`)
   - ✅ stereo 兩聲道確認
   - ✅ JB62 實機接線驗證完成
-- 🟡 **Phase 1**:最小 IP(passthrough)跑通自訂路徑 — **進行中，卡在 AXI IIC**
-  - ✅ 實作計畫書完成（`docs/phase1.md`）
-  - ✅ HLS 全部 source 撰寫完成（`effect_ip.h`、三個 .cpp、testbench、tcl）
-  - ✅ Vitis HLS C Sim PASS、synthesis 完成、export IP 完成
-  - ✅ AXI-Lite offset 填入 `docs/INTERFACE.md`
-  - ✅ Vivado BD 完成（含 clk_oddr ODDR 模組解決 MCLK IO 問題）
-  - ✅ Bitstream 生成成功
-  - ✅ Effect IP 板上 sanity check PASS（`run_effect(0.5, -0.5)` 回傳正確值）
-  - ✅ `pio_loop.py` 完成（含 codec init、batch process 函式）
-  - 🔴 **Blocker**：`AudioADAU1761.configure()` 無限 hang
-    - 原因：ADAU1761 I2C 走 PL 腳（U9=SCL, T9=SDA），需 **AXI IIC IP** 在 BD 內；目前 BD 缺少此 IP
-    - 下一步：Vivado BD 加入 `axi_iic:2.0`，連接 U9/T9，重新 build bitstream
-    - 詳見 `docs/decisions.md` D13
+- ✅ **Phase 1**:最小 IP(passthrough)跑通自訂路徑 — **完成**
+  - ✅ HLS source、C Sim、synthesis、export IP
+  - ✅ Vivado BD（含 clk_oddr、axi_iic_0）、Bitstream 生成
+  - ✅ Effect IP sanity check PASS（`run_effect(0.5, -0.5)` 正確）
+  - ✅ Codec 初始化：`init_codec_via_axiic(ol)` 繞過 libaudio I2C，用 `ol.axi_iic_0`（AxiIIC）直接設定 ADAU1761
+  - ✅ 音訊 record/play：`py_record` / `py_play` 用 MMIO 直讀 audio_codec_ctrl，繞過 libaudio UIO（避免 kernel crash）
+  - ✅ **Phase 1 Exit Criteria PASS**：聲音穿透自訂 Effect IP（batch mode，音質差為 PIO 限制，非 bug）
+  - 技術債：`docs/decisions.md` 待補 D14（AXI IIC PYNQ DT 問題與 AxiIIC 繞法）
 - 🔲 Phase 2:distortion(hard clipping + AXI-Lite threshold/gain)
 - 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
 - 🔲 Phase 4:按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
