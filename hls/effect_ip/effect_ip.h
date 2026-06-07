@@ -11,10 +11,12 @@ typedef ap_fixed<24, 1> sample_t;
 // AXI-Lite parameter: PS writes an integer, IP interprets as fixed-point
 typedef int param_t;
 
-// Cross-sample state (placeholder for Phase 1)
-// Phase 3: Claire adds LFO phase accumulator and IIR history here
+// Cross-sample state (Phase 3)
+// lfo_phase : LFO phase accumulator, wraps naturally at 2^32 (one full cycle)
+// iir_prev  : IIR filter previous output y[n-1], same format as sample_t
 typedef struct {
-    int placeholder;  // do not modify until Phase 3
+    ap_uint<32>  lfo_phase;
+    sample_t     iir_prev;
 } state_t;
 
 // --- Function declarations ---
