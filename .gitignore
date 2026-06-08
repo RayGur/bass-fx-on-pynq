@@ -48,6 +48,9 @@ build/
 relevant project/
 pynq_official/
 
+# Docs scratch files
+docs/*.txt
+
 # OS
 .DS_Store
 Thumbs.db

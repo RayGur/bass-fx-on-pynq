@@ -58,17 +58,18 @@
 
 ---
 
-## D5. 資料路徑:PIO 先行,DMA 為加分(A→B 分層)
+## D5. 資料路徑:PIO 先行,DMA 為必要步驟(A→B 分層)
 
 - **背景**:音訊樣本需在 PS 與 PL 之間搬運。參考專案用 per-sample PIO(CPU 全程被綁、延遲高)。
 - **選項**:(A) per-sample PIO;(B) AXI DMA + 雙緩衝 + 中斷。
-- **決定**:MVP 用 A 保底,跑通後升級 B 為加分。
+- **決定**:MVP 用 A 保底,跑通後升級 B。**Phase 6 DMA 升級原列「加分」，已調整為必要步驟**；理由見 D15（Python PIO 音質不可接受、libaudio 路徑在自訂 BD 下無法直接修復）。時間不足時 fallback 為 C PIO（板上編譯 C 程式輪詢 MMIO，可跟上 48 kHz，無需 DMA 硬體改動）。
 - **理由**:
   - A 最簡單、確保一定有可 demo 成果;B 延遲低、CPU 解放,且「識別 PIO 瓶頸並改 DMA」是漂亮的工程敘事。
   - 延遲容忍度經確認可放寬(目標 <100 ms,遠寬於演奏舒適區),故 A 的高延遲不擋 demo。
   - 升級成本可控,前提是運算核心解耦(見 D6)。
+  - 社群實際做法（Audio-Lab-PYNQ）亦直接採 AXI-DMA，不走 libaudio，印證此方向正確。
 - **A→B 成本估**:運算核心 0 改動;IP 介面小改(改 AXI-Stream);block design 中改(加 DMA + 中斷);PS 端大改(DMA 設定 + 中斷 + 雙緩衝)。約 4–6 工作天。
-- **參考**:參考專案的 PIO 實作;Zynq DMA / 中斷標準範式;團隊既有 DMA(MM2S/S2MM)與 IRQ/GIC 經驗。
+- **參考**:參考專案的 PIO 實作;Zynq DMA / 中斷標準範式;Audio-Lab-PYNQ（https://github.com/cramsay/Audio-Lab-PYNQ）採 AXI-DMA + smbus2 驗證此路線可行。
 
 ---
 
@@ -181,29 +182,38 @@
 
 ---
 
-## D14. PYNQ 2.5 不為 AXI IIC 建 DT entry：改用 AxiIIC Python driver
+## D14. ADAU1761 I2C 初始化：AxiIIC MMIO 直接操作
 
-- **背景**：BD 加入 `axi_iic:2.0`，XDC 接 U9/T9，硬體正確。但 overlay 載入後 `i2cdetect -l` 看不到新的 bus；`/sys/kernel/config/device-tree/overlays/` 為空；`i2c-xiic` kernel module 未載入。
-- **原因**：PYNQ 2.5 的 HWH parser 為特定 IP 自動建立 device tree overlay，但不包含 `axi_iic`。沒有 DT entry → kernel 不認識這塊硬體 → `/dev/i2c-X` 不出現 → `libaudio.so` 無法送 I2C 指令。另：IP 版本 2.1 vs `AxiIIC.bindto = ['xilinx.com:ip:axi_iic:2.0']`，需 `ignore_version=True`。
+- **背景**：BD 加入 `axi_iic:2.0`，XDC 接 U9/T9，硬體正確。但 overlay 載入後 `i2cdetect -l` 看不到新的 bus，`libaudio.so` 的 I2C 路徑（預期 `/dev/i2c-X`）無法使用。
+- **原因（查證後修正）**：`AxiIIC` **從未依賴 device tree 或 kernel driver**。任何版本的 PYNQ 都不為 `axi_iic` 產生 DT entry；`AxiIIC` 從 2018 年加入起就是純 userspace MMIO 操作，透過 PYNQ 的 `bindto` 機制自動綁定，完全繞過 Linux i2c subsystem。`/dev/i2c-X` 不出現是預期行為，不是缺陷。
+  - 真正的問題是：`libaudio.so` 的 I2C 實作（`i2cps.c`）預期透過 Linux `/dev/i2c-X` 送指令，但 ADAU1761 的 SDA/SCL 在 PL 腳（U9/T9），走的是 AXI IIC，不是 PS IIC。`libaudio` 這條路根本行不通。
+  - 次要問題：Vivado 2022.2 產生的 `axi_iic:2.1`，但 PYNQ 2.5 的 `iic.py` `bindto = ['xilinx.com:ip:axi_iic:2.0']`，版本不符導致 `ol.axi_iic_0` 靜默變成 `DefaultIP`，需 `ignore_version=True`。
 - **決定**：
   1. `Overlay(..., ignore_version=True)`
   2. `AudioADAU1761.configure()` 在 Overlay 載入前 monkey-patch，跳過 libaudio I2C 呼叫
   3. 新增 `init_codec_via_axiic(ol)`：用 `ol.axi_iic_0.send()` 直接操作 AXI IIC MMIO 暫存器，重現完整初始化序列
   4. 預先開啟 HP output mixer
-- **技術原理**：`XIic_Send(mmio_vaddr, ...)` 透過 `libiic.so` 直接寫 AXI IIC TX FIFO，完全繞過 Linux i2c subsystem。
+- **技術原理**：AxiIIC 直接寫 AXI IIC IP 的 TX FIFO 暫存器（MMIO），IP 產生 I2C 波形驅動 U9/T9，完全繞過 Linux i2c subsystem。這是 PYNQ 對 AXI IIC 的標準用法，非 workaround。
 - **AXI IIC base address**：`0x40800000`（已填入 `docs/INTERFACE.md`）
+- **版本升級注意**：若未來升級至 PYNQ master / 3.x，`iic.py` 的 `bindto` 已改為 `axi_iic:2.1`，屆時可移除 `ignore_version=True`。
+- **參考**：PYNQ `iic.py` 原始碼（https://github.com/Xilinx/PYNQ/blob/master/pynq/lib/iic.py）；PYNQ `hwh_parser.py` 原始碼確認無 axi_iic 特殊處理（https://github.com/Xilinx/PYNQ/blob/master/pynq/pl_server/hwh_parser.py）。
 
 ---
 
-## D15. libaudio.record()/play() 導致 kernel crash：純 Python MMIO 作為 MVP 暫解
+## D15. libaudio.record()/play() 導致 kernel crash：音訊搬運路線決策
 
 - **背景**：codec 初始化後呼叫 `audio.record()`，不到 3 秒 kernel 重開機。
-- **原因**：`libaudio.record()` 呼叫 `mmap(/dev/uio0, audio_mmap_size)`，若 `audio_mmap_size`（來自 HWH 的 IP 位址範圍）與 UIO device 實際允許大小不符，存取超出範圍會觸發 ARM bus error → kernel panic。
-- **決定（MVP 暫解）**：完全繞過 libaudio 的 record/play，改用純 Python MMIO 直接存取 `audio_codec_ctrl` 暫存器：
+- **根本原因**：`libaudio.so` 是針對 PYNQ base overlay 的特定記憶體佈局編譯的。它呼叫 `mmap(/dev/uio0, audio_mmap_size)`，其中 `audio_mmap_size` 來自 HWH 的 IP 位址範圍，UIO driver 依 base image DT 宣告決定允許的最大 mmap size；自訂 BD 改變了記憶體佈局，兩者不符 → 存取超出範圍 → ARM bus error → kernel panic。本質上是 **libaudio 與自訂 BD 的記憶體佈局不相容**，不是 Effect IP 的問題。
+- **為何不修 libaudio**：開發規則禁止修改系統函式庫（Rule #4）。對齊 base overlay 位址理論上可行，但需取得 base overlay source Tcl 並確認 `audio_codec_ctrl` 固定位址，工作量與 DMA 相當，且最終仍受 libaudio 本身效能限制。社群其他 PYNQ-Z2 音訊專案（如 Audio-Lab-PYNQ）亦選擇完全捨棄 libaudio 走 DMA，佐證此路線。
+- **當前暫解（Python MMIO polling）**：完全繞過 libaudio，改用純 Python 直接存取 `audio_codec_ctrl` 暫存器：
   - `py_record()`：polling `I2S_STATUS_REG`，每 frame 讀 RX_L / RX_R
   - `py_play()`：polling `I2S_STATUS_REG`，每 frame 寫 TX_L / TX_R
-- **已知限制**：Python loop ~20–30 μs/次，I2S frame 每 20.8 μs 一個，Python 跟不上 48kHz → 掉 sample → 音質差（破碎）。**這是 MVP 可接受的暫時狀態**；Phase 6 升級 AXI DMA + 雙緩衝 + 中斷後，音訊搬運改由 DMA 硬體負責，此問題根本解決。
+- **已知限制**：Python loop ~20–30 μs/次，I2S frame 每 20.8 μs 一個，Python 跟不上 48 kHz → 掉 sample → 音質差（破碎）。
+- **升級路線**：
+  - **Fallback（時間不足）**：C PIO — 板上編譯 C 程式做同樣的 MMIO polling，C loop < 1 μs/次，可跟上 48 kHz，無需更動 HLS IP 或 BD。
+  - **正式解（Phase 6，必要）**：AXI DMA + 雙緩衝 + 中斷，音訊搬運改由 DMA 硬體負責，CPU 解放，根本解決。Phase 6 已從「加分」升為必要步驟（見 D5）。
 - **未影響**：HLS Effect IP、AXI-Lite 控制路徑完全不受影響，Phase 2–5 照計畫進行。
+- **參考**：Audio-Lab-PYNQ（https://github.com/cramsay/Audio-Lab-PYNQ）採 AXI-DMA + smbus2 完全繞過 libaudio；PYNQ discuss 論壇 UIO device 討論（https://discuss.pynq.io/t/uio-device/1801）說明 UIO mmap 機制。
 
 ---
 

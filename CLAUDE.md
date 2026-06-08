@@ -4,6 +4,14 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 
 ---
 
+## 回答品質要求
+
+- **不確定時明說**：技術細節若不確定，直接說「不確定」或「需要查證」，不要猜測後裝作確定。
+- **主動查資料**：對可以用 WebSearch 驗證的問題，查完再回答，不要只靠訓練資料。
+- **引用來源**：查到的外部資訊附 URL；引用專案內文件時標明檔名與段落。
+
+---
+
 ## Claude Code 的角色與邊界
 
 **Claude Code 只負責程式碼層**,以下由 Ray 手動執行,Claude Code 不碰:
@@ -99,7 +107,7 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 - 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
 - 🔲 Phase 4:按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
 - 🔲 Phase 5:效果串接(2 switch 同開,需 P2/P3 各自通過)
-- 🔲 Phase 6:A→B 升級(DMA + 雙緩衝 + 中斷)— 加分
+- 🔲 Phase 6:A→B 升級(DMA + 雙緩衝 + 中斷)— **必要步驟**；時間不夠時 fallback 為 C PIO
 
 > 進度隨開發更新。
 

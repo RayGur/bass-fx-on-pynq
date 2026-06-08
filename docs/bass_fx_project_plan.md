@@ -19,7 +19,7 @@
 |---|---|
 | **MVP(保底)** | distortion + wobble 兩個效果、按鈕單選一個效果、PS per-sample 搬運(PIO)、現場彈奏 demo |
 | **MVP 後延伸** | 效果串接(兩個 switch 可同時開) |
-| **加分** | A→B 資料路徑升級:AXI DMA + 雙緩衝 + 中斷 |
+| **必要步驟** | A→B 資料路徑升級:AXI DMA + 雙緩衝 + 中斷（時間不足 fallback：C PIO） |
 
 ### 1.3 開發策略
 
@@ -30,7 +30,7 @@ A(PIO,最簡單能動)  →  效果串接  →  B(DMA 優化,技術亮點)
    保底 MVP              第一延伸        加分
 ```
 
-先用最簡單的 PIO 把整條資料路徑與兩個效果跑通(確保一定有東西能 demo),再往上疊串接與 DMA。每一層都建立在已驗證的下一層之上。
+先用最簡單的 PIO 把整條資料路徑與兩個效果跑通(確保一定有東西能 demo),再往上疊串接與 DMA。每一層都建立在已驗證的下一層之上。DMA 升級（Phase 6）原列加分，因 Python PIO 音質不可接受且 libaudio 路徑與自訂 BD 不相容（詳見 decisions.md D15），已調整為必要步驟；時間不足時 fallback 為 C PIO。
 
 ### 1.4 團隊分工
 
@@ -105,7 +105,7 @@ Zynq-7000 同時包含 ARM 處理器(PS, Processing System)與 FPGA 可重構邏
 
 **改掉(本專案優化):**
 
-- **資料搬運**:該專案為 per-sample PIO(CPU 全程被綁、延遲高)。本專案 MVP 仍用 PIO 保底,但規劃升級為 AXI DMA + 雙緩衝 + 中斷(加分 Phase 6)。
+- **資料搬運**:該專案為 per-sample PIO(CPU 全程被綁、延遲高)。本專案 MVP 仍用 PIO 保底,但 Phase 6 升級為 AXI DMA + 雙緩衝 + 中斷（已列為必要步驟，見 D5/D15）。
 - **不改系統 `libaudio.so`**:該專案直接改 PYNQ 系統函式庫,風險高(改壞整個音訊子系統、重刷 image 全失)。本專案於自有 userspace / notebook 操作,不動系統庫。
 
 ### 3.3 bass 與吉他的差異對設計的影響
@@ -364,7 +364,7 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 - **Exit Criteria**:兩效果可獨立開關;同開時串接生效且不爆音(電平管理 OK)。
 - **預計**:6 小時。
 
-### Phase 6 — A→B 升級:DMA + 雙緩衝 + 中斷(加分)
+### Phase 6 — A→B 升級:DMA + 雙緩衝 + 中斷（必要；時間不足 fallback C PIO）
 
 - **目標**:以 DMA 取代 PIO,降低延遲、解放 CPU,作為技術亮點。
 - **產出**:IP 介面改 AXI-Stream;block design 加 AXI DMA(MM2S/S2MM)+ 中斷線到 PS;PS 改為 DMA 描述符 + 中斷處理 + ping-pong 雙緩衝。
@@ -411,7 +411,7 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 | 阻抗音質劣化 | 低 | 聲音悶、呱呱、噪訊 | 開發直插;demo 可加主動 DI | 否 |
 | 低頻 IIR 量化不穩 | 中 | wobble 失真、雜訊、不穩 | 一階先行;clamp;謹慎選 Q 格式與係數 | 部分(僅 wobble) |
 | 串接爆音 | 中 | 同開時破音/wrap | 級間 clamp;級間電平管理 | 否(串接為延伸) |
-| DMA / 中斷除錯 | 高 | bitstream「看似對卻不動」 | 留充足除錯緩衝;先 PIO 保底 | 否(DMA 為加分) |
+| DMA / 中斷除錯 | 高 | bitstream「看似對卻不動」 | 留充足除錯緩衝;先 PIO 保底;時間不足 fallback C PIO | 否(PIO 先保底) |
 | I2S codec 整合 | 中 | codec 不發聲 | 沿用 base overlay,不碰純 PL I2S | 是(Phase 0 須先過) |
 | 環境版本不一致 | 中 | 一板可重現另一板不行 | Phase 0 對齊;指定 golden 板 | 可能 |
 | 時程 | 中 | 加分項做不完 | 分層策略,MVP(Phase 0–4)即可交付 | 否 |
@@ -429,7 +429,7 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 ### 12.2 延伸 / 加分交付物
 
 - 效果串接(Phase 5)。
-- DMA + 雙緩衝 + 中斷的低延遲資料路徑(Phase 6)。
+- DMA + 雙緩衝 + 中斷的低延遲資料路徑(Phase 6，必要步驟)。
 - 資源使用與(若做)最佳化分析。
 
 ### 12.3 demo 腳本(現場為主)
@@ -458,7 +458,7 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 | **延伸 + 加分小計(5–6)** | | **36** |
 | **總計** | | **86** |
 
-> 小時為估算,含除錯緩衝。Phase 6 不確定性最高(block design 中斷/DMA 除錯)。MVP(0–4)為保底可交付範圍。
+> 小時為估算,含除錯緩衝。Phase 6 不確定性最高(block design 中斷/DMA 除錯)，已列為必要步驟；時間不足時 fallback 為 C PIO（板上編譯 C 程式輪詢 MMIO，可跟上 48 kHz）。MVP(0–4)為保底可交付範圍。
 
 ---
 

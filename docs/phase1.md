@@ -199,12 +199,12 @@ overlay = Overlay("bass_fx.bit")
 
 ### P3. AudioADAU1761.configure() 無限 hang
 - **症狀**：`init_audio()` 執行超過 3 分鐘不返回
-- **原因**：ADAU1761 I2C 走 PL 腳（U9/T9），需 AXI IIC IP；`libaudio.so` 的 `config_audio_pll()` 在等 codec PLL lock，但因缺少 AXI IIC，I2C 訊號送不到 codec
+- **原因**：ADAU1761 I2C 走 PL 腳（U9/T9），`libaudio.so` 的 `config_audio_pll()` 預期透過 Linux `/dev/i2c-X` 送 I2C 指令，但 PL 腳需透過 AXI IIC IP 才能驅動，libaudio 這條路根本行不通。`AxiIIC` 從來不依賴 kernel DT，任何版本的 PYNQ 都不為 `axi_iic` 建 DT entry，它始終是純 userspace MMIO 操作（PYNQ bindto 機制）。
 - **解法（實際採用）**：
   1. BD 加入 `axi_iic:2.1`，接 U9/T9，XDC 加 PULLUP，rebuild bitstream
-  2. PYNQ 2.5 HWH parser 不建 DT entry → `/dev/i2c-X` 不出現 → 改用 `pynq.lib.iic.AxiIIC` 直接操作 MMIO
+  2. `Overlay(..., ignore_version=True)`：因 Vivado 2022.2 產 `axi_iic:2.1`，PYNQ 2.5 的 `iic.py` bindto 為 `2.0`，版本不符需此旗標
   3. `AudioADAU1761.configure()` 在 `__init__` 中自動呼叫且會 hang → 在 `Overlay()` 前 monkey-patch 為空實作，略過 libaudio I2C 路徑
-  4. 自行撰寫 `init_codec_via_axiic()` 完成 ADAU1761 初始化（PLL + 暫存器 + select_line_in）
+  4. 自行撰寫 `init_codec_via_axiic()` 完成 ADAU1761 初始化（PLL + 暫存器 + select_line_in），直接操作 AXI IIC MMIO 暫存器
 - **狀態**：✅ **已解決（詳見 D14）**
 
 ### P4. libaudio.record() 導致 kernel crash 重開機
