@@ -3,8 +3,8 @@
 本檔定義 Ray / Claire 平行開發的介面合約。**訂定後視為凍結**;要修改必須先改本檔、通知對方、再動 code,不可私自更動。改動須有依據(例如實測發現不可行),不是不能改,而是不能默默改。
 
 > 狀態:
-> - ✅ 已定案:GPIO / LED 接腳與功能、定點數 Q 格式
-> - 🔲 待定案:AXI-Lite byte offset(Phase 1 後填)、`process_sample()` 完整簽章(Phase 2/3 定案)
+> - ✅ 已定案:GPIO / LED 接腳與功能、定點數 Q 格式、AXI-Lite byte offset、distortion 參數編碼（Phase 2）
+> - 🔲 待定案：`process_sample()` 完整簽章（Phase 3 wobble 定案後補全）、wobble 濾波器係數查表
 
 ---
 
@@ -15,13 +15,30 @@
 | 用途 | 型別 | Q 格式 | 說明 |
 |------|------|--------|------|
 | 音訊 sample | `ap_fixed<24,1>` | Q1.23 | 1 符號位 + 23 小數位,範圍 [−1, +1);對應 codec 24-bit |
-| 中間運算 | `ap_fixed<W, I>`(W≥32) | 待 Phase 2/3 定 W,I | 須比 sample 寬以留 headroom 防溢位;運算完 clamp 回 Q1.23 |
-| 參數(AXI-Lite 傳入) | `int`(32-bit) | — | PS 傳整數,IP 內部解讀為對應定點值 |
+| 中間運算（distortion）| `ap_fixed<32,6>` | Q6.26 | 6 整數位（範圍 [−32, +32)），可承載 gain 20x；運算完 clamp 回 Q1.23 |
+| 中間運算（wobble）| `ap_fixed<W,I>`（W≥32）| 待 Phase 3 定案 | IIR / LFO 運算範圍待確認後回填 |
+| 參數(AXI-Lite 傳入) | `int`(32-bit) | — | PS 傳整數,IP 內部解讀規則見下方各效果說明 |
 
 原則:
 - 運算過程用較寬中間型別,**每級結束 clamp 回 [−1, +1)**(見開發規則 6)。
 - 低頻 IIR 對係數量化敏感;wobble 濾波器係數**建議預先算好存查表(LUT)**,避免掃頻時即時重算造成量化誤差(文獻常見做法)。
-- 中間型別 W/I 待實作 distortion / wobble 時依實際運算範圍定案並回填。
+
+### Distortion 參數編碼（Phase 2 定案）✅
+
+| 參數 | AXI-Lite 型別 | HLS 解讀 | PS 端寫法範例 |
+|------|--------------|---------|------------|
+| `threshold` | `int`（32-bit）| `ap_fixed<24,1>(ap_int<24>(threshold))`，即 Q1.23 | `int(0.3 * (1<<23))` → clip 點 0.3 |
+| `gain` | `int`（32-bit）| 直接做整數乘法，有效範圍 1–20 | `8` → 放大 8 倍 |
+
+Distortion 演算法（hard clipping）：
+```
+ap_fixed<32,6> amp = in * gain;         // 放大，中間型別防溢位
+// threshold decode：必須用 .range() raw bit 指定，不能用值轉換
+ap_fixed<24,1> thr_q; thr_q.range(23,0) = ap_int<24>(threshold);
+ap_fixed<32,6> thr = thr_q;
+out = clamp(amp, -thr, +thr);           // hard clip
+// step 3 clip 後 |out| <= thr <= 1.0，cast 回 sample_t 不會 wrap
+```
 
 ---
 
@@ -83,8 +100,8 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 | `out_r_ap_vld` | PL→PS | `0x34` | out_r 有效旗標（read, clear on read） |
 | `dist_en` | PS→PL | `0x40` | distortion 開關，bit0 |
 | `wobble_en` | PS→PL | `0x48` | wobble 開關，bit0 |
-| `threshold` | PS→PL | `0x50` | distortion 切點（32-bit int） |
-| `gain` | PS→PL | `0x58` | distortion 輸入增益（32-bit int） |
+| `threshold` | PS→PL | `0x50` | distortion clip 點，Q1.23 int；PS 寫 `int(clip_float * (1<<23))`，例如 0.3 → `0x2666666` |
+| `gain` | PS→PL | `0x58` | distortion 輸入增益，純整數 1–20；PS 直接寫整數，例如 `8` |
 | `lfo_rate` | PS→PL | `0x60` | wobble 掃動速率（32-bit int） |
 | `lfo_depth` | PS→PL | `0x68` | wobble 掃動範圍（32-bit int） |
 | `state` | PS→PL | `0x70` | 跨 sample 狀態（Phase 1 為 placeholder） |
@@ -154,3 +171,4 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 |------|------|
 | 初版 | GPIO/LED 接腳與功能、Q 格式定案；AXI-Lite offset 與 process_sample 簽章待後續 Phase |
 | Phase 1 | AXI-Lite offset 定案（from HLS xprocess_sample_hw.h）；AXI GPIO base address 定案；AXI IIC base address 定案（`0x40800000`）；PYNQ 2.5 DT 限制與 AxiIIC 存取方式補充 |
+| Phase 2 | distortion 參數編碼定案：threshold 為 Q1.23 int，gain 為純整數 1–20；中間運算型別定案：`ap_fixed<32,6>`（Q6.26） |

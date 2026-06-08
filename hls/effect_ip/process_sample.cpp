@@ -28,15 +28,11 @@ void process_sample(
     sample_t sig_l = in_l;
     sample_t sig_r = in_r;
 
-    // Phase 1: passthrough, no effect calls.
-    // Phase 2: uncomment the distortion block.
-    // Phase 3: uncomment the wobble block.
-
-    // --- distortion (uncomment in Phase 2) ---
-    // if (dist_en) {
-    //     sig_l = apply_distortion(sig_l, threshold, gain);
-    //     sig_r = apply_distortion(sig_r, threshold, gain);
-    // }
+    // --- distortion (Phase 2) ---
+    if (dist_en) {
+        sig_l = apply_distortion(sig_l, threshold, gain);
+        sig_r = apply_distortion(sig_r, threshold, gain);
+    }
 
     // --- wobble (uncomment in Phase 3) ---
     // if (wobble_en) {

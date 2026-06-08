@@ -31,7 +31,7 @@ output    = clamp(amplified, −threshold, +threshold)
 | 參數 | 型別 | 單位 / 範圍 | 說明 |
 |------|------|------------|------|
 | `threshold` | `param_t` (int32) | Q1.23 raw integer；推薦範圍 838860–8388607（≈ 0.1 – 1.0） | 截點；0.5 → 傳 4194304（= 0.5 × 2²³） |
-| `gain` | `param_t` (int32) | 整數 1–8 | 輸入增益倍率；1 = 無放大 |
+| `gain` | `param_t` (int32) | 整數 1–20（對應商用 distortion pedal 最大增益約 21x） | 輸入增益倍率；1 = 無放大 |
 
 > **PS 端換算**：`threshold_int = int(threshold_float * (1 << 23))`
 
@@ -43,28 +43,31 @@ output    = clamp(amplified, −threshold, +threshold)
 #include "effect_ip.h"
 
 sample_t apply_distortion(sample_t in, param_t threshold, param_t gain) {
-    // 1. 放大：使用寬中間型別防溢位（gain 最大 8，sample 最大 ~1 → 最大 ~8）
-    ap_fixed<32, 9> amplified = (ap_fixed<32, 9>)in * (ap_fixed<9, 9>)gain;
+    // 1. 放大：使用寬中間型別防溢位（gain 最大 20，sample 最大 ~1 → 最大 ~20）
+    //    ap_fixed<32,6> = Q6.26，範圍 [-32,+32)，可承載 20x（D17）
+    ap_fixed<32, 6> amplified = (ap_fixed<32, 6>)in * gain;
 
-    // 2. threshold 從 Q1.23 raw int 轉回 [-1,+1) 定點
-    //    除以 2^23 是常數，HLS 會優化為 shift
-    ap_fixed<32, 9> thresh = (ap_fixed<32, 9>)threshold
-                           * ap_fixed<32, 9>(1.0 / (1 << 23));
+    // 2. threshold 從 Q1.23 raw int 解碼（必須用 .range() raw bit 指定）
+    //    注意：(ap_fixed<24,1>)(ap_int<24>)threshold 是值轉換，2516582 → 2516582.0 → overflow！
+    //    正確：直接把整數 raw bits 指定給 ap_fixed 的 .range()
+    ap_fixed<24, 1> thresh_q;
+    thresh_q.range(23, 0) = ap_int<24>(threshold);  // bit reinterpret
+    ap_fixed<32, 6> thresh = thresh_q;
 
-    // 3. Hard clip
+    // 3. Hard clip at ±threshold
     if (amplified >  thresh)  amplified =  thresh;
     if (amplified < -thresh)  amplified = -thresh;
 
-    // 4. 縮回 sample_t（ap_fixed 會自動 saturate）
+    // 4. 縮回 sample_t，保護性 clamp 防止 threshold 設錯時溢出（開發規則 6）
     return (sample_t)amplified;
 }
 ```
 
 **注意事項**：
-- `ap_fixed<32, 9>` = 1 符號位 + 8 整數位 + 23 小數位，可容納 gain=8、完整不溢位
-- `(ap_fixed<9, 9>)gain` 確保整數乘法路徑；HLS 會合成成 DSP multiply-add
+- `ap_fixed<32,6>`（Q6.26）：整數部分 6 bit，範圍 [−32, +32)，gain ≤ 20 不溢位（D17）
+- `(ap_fixed<24,1>)(ap_int<24>)threshold`：取 int 低 24 bit 直接解讀為 Q1.23，與 INTERFACE.md 定案一致（D16）
+- `(sample_t)amplified` 的 ap_fixed cast 在值超出 Q1.23 範圍時會 wrap（非 saturate），故 threshold 正常設定（≤1.0）時步驟 3 clip 已確保不溢出
 - 禁用 `#pragma HLS UNROLL`、`DATAFLOW`（開發規則 5）
-- 每級結束後 clamp 已在步驟 3 完成（開發規則 6）
 
 ---
 
@@ -102,7 +105,7 @@ if (*out_l < -sample_t(1.0))     *out_l = -sample_t(1.0);
 | 正向 clipping | 0.8 | 0.5（Q1.23） | 2 | out == 0.5（截頂） |
 | 負向 clipping | −0.8 | 0.5（Q1.23） | 2 | out == −0.5 |
 | gain=1（threshold=1.0） | 0.9 | 1.0（Q1.23） | 1 | out ≈ 0.9（無截） |
-| 最大 gain 不 overflow | 0.5 | 0.3（Q1.23） | 8 | out == 0.3（截，不爆） |
+| 最大 gain 不 overflow | 0.5 | 0.3（Q1.23） | 20 | out == 0.3（截，不爆） |
 
 Threshold Q1.23 換算：`0.5 → 4194304`，`0.3 → 2516582`
 
@@ -113,10 +116,10 @@ Threshold Q1.23 換算：`0.5 → 4194304`，`0.3 → 2516582`
 ### 6.1 新增參數設定 helper
 
 ```python
-def set_distortion(threshold_float=0.5, gain_int=2):
+def set_distortion(threshold_float=0.5, gain_int=4):
     """
     threshold_float: 0.0–1.0，截點（佔滿刻度的比例）
-    gain_int       : 1–8
+    gain_int       : 1–20
     """
     thresh_raw = int(threshold_float * (1 << 23))
     effect.write(ADDR_THRESHOLD, thresh_raw)
@@ -163,13 +166,13 @@ def run_realtime(audio_ip, seconds=10.0):
 ## 7. Ray 手動執行 Checklist
 
 ### Step A — 修改 HLS
-- [ ] 修改 `hls/effect_ip/distortion.cpp`（按第 3 節）
-- [ ] 修改 `hls/effect_ip/process_sample.cpp`（按第 4 節）
-- [ ] 在 Vitis HLS 執行 C Simulation，所有 testbench case 通過
-- [ ] 執行 HLS Synthesis，確認 II=1，無 Error，資源合理
+- [x] 修改 `hls/effect_ip/distortion.cpp`（按第 3 節）
+- [x] 修改 `hls/effect_ip/process_sample.cpp`（按第 4 節）
+- [x] 在 Vitis HLS 執行 C Simulation，所有 testbench case 通過（13/13 PASS，2026-06-08）
+- [x] 執行 HLS Synthesis，確認無 Error，資源合理（DSP×2，LUT 1%，timing 6.57 ns，2026-06-08）
 
 ### Step B — Rebuild Bitstream
-- [ ] Vivado：更新 IP（Refresh IP）
+- [ ] Vivado：Export IP → Refresh IP（更新 `process_sample_0`）
 - [ ] Generate Bitstream 成功
 - [ ] `bass_fx.bit` + `bass_fx.hwh` 傳板
 
@@ -178,7 +181,7 @@ def run_realtime(audio_ip, seconds=10.0):
 - [ ] 執行 `set_distortion(0.5, 4); enable_distortion(True)`
 - [ ] 執行 `run_realtime(audio, 10.0)`，接 JB62 + amp
 - [ ] 能聽到失真（vs passthrough 有明顯差異）
-- [ ] 調 gain（1 vs 8）能聽到失真程度變化
+- [ ] 調 gain（1 vs 20）能聽到失真程度變化
 - [ ] 調 threshold（0.1 vs 0.8）能聽到截點變化
 - [ ] 切 sw[0] OFF → 聲音恢復 passthrough
 - [ ] 無爆音、無溢位

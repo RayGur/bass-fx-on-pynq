@@ -103,7 +103,16 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - ✅ 音訊 record/play：`py_record` / `py_play` 用 MMIO 直讀 audio_codec_ctrl，繞過 libaudio UIO（避免 kernel crash）
   - ✅ **Phase 1 Exit Criteria PASS**：聲音穿透自訂 Effect IP（batch mode，音質差為 PIO 限制，非 bug）
   - 技術債：`docs/decisions.md` 待補 D14（AXI IIC PYNQ DT 問題與 AxiIIC 繞法）
-- 🔲 Phase 2:distortion(hard clipping + AXI-Lite threshold/gain)
+- 🚧 **Phase 2**:distortion(hard clipping + AXI-Lite threshold/gain) — HLS 完成，等待 Vivado
+  - ✅ `distortion.cpp` 實作（hard clipping，`ap_fixed<32,6>` 中間型別，threshold Q1.23 raw bit decode）
+  - ✅ `process_sample.cpp` 啟用 distortion block
+  - ✅ `tb_process_sample.cpp` Phase 2 測試（13 cases）
+  - ✅ C Simulation PASS（全 13 case）
+  - ✅ RTL Synthesis PASS（DSP×2，LUT 1%，timing 6.57 ns < 10 ns）
+  - 🔲 Export IP → Vivado Refresh IP → Generate Bitstream
+  - 🔲 上板 AXI-Lite 控制驗證（dist_en、threshold、gain）
+  - 🔲 實機音訊聽感驗證（Exit Criteria）
+  - **技術債**：threshold decode 用 `.range()` raw bit assign（不能用值轉換），已記錄於 `docs/phase2.md`
 - 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
 - 🔲 Phase 4:按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
 - 🔲 Phase 5:效果串接(2 switch 同開,需 P2/P3 各自通過)

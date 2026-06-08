@@ -217,9 +217,38 @@
 
 ---
 
+## D16. Distortion 參數編碼：threshold Q1.23 + gain 純整數
+
+- **背景**：`threshold` 與 `gain` 均以 `param_t = int`（32-bit）經 AXI-Lite 傳入，IP 內部需決定如何解讀。
+- **選項**：
+  - A) threshold Q1.23 整數 + gain 純整數倍數
+  - B) threshold 百分比整數（0–100）+ gain 純整數
+  - C) 兩者皆 Q1.23（gain 上限 <1，無法放大）
+- **決定**：選 A。
+- **理由**：
+  - threshold 用 Q1.23（`int(clip_float * (1<<23))`）與音訊 sample 型別(`ap_fixed<24,1>`) 格式一致，HLS 端轉換最自然（`ap_fixed<24,1>(ap_int<24>(threshold))`）；是 Xilinx HLS 音訊專案慣例。
+  - gain 用純整數（1–20）PS 端最直觀，對應商用 pedal（Boss DS-1 ≈ 21x），無需格式轉換。
+- **參考**：MicroZed Chronicles HLS Interfacing；ElectroSmash Boss DS-1 Analysis（Boss DS-1 最大增益 26.5 dB ≈ 21x）；WebSearch 查詢結果（2026-06-08）。
+
+---
+
+## D17. Distortion 中間運算型別：ap_fixed<32,6>
+
+- **背景**：`ap_fixed<24,1>` × `int gain`（最大 20）乘積可達 20，超出 Q1.23 範圍，需更寬中間型別承載乘積再 clamp。
+- **選項**：
+  - A) `ap_fixed<32,6>`：Q6.26，範圍 [−32, +32)，gain ≤ 20 夠用，資源消耗合理
+  - B) `ap_fixed<48,6>`：更多 headroom，對此場景 overkill
+  - C) `ap_fixed<40,9>`：折衷
+- **決定**：選 A（`ap_fixed<32,6>`）。
+- **理由**：gain 最大 20，sample 最大 ≈ 1，乘積最大 20 < 32，Q6.26 的 6 整數位完全夠用；32-bit 整體寬度比 24-bit sample 寬 8 bit，有充足精度；PYNQ-Z2 48 kHz 時序壓力極小，DSP block 27-bit 限制不構成影響。
+- **影響**：clamp 後必須回到 `sample_t`（ap_fixed<24,1>）；定案後回填 `docs/INTERFACE.md` 第 1 節。
+- **參考**：WPI Fixed-Point Arithmetic Lecture；Xilinx HLS ap_fixed Multiplication Forum；WebSearch 查詢結果（2026-06-08）。
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
-- 中間運算型別寬度(Phase 2/3)。
-- `process_sample()` 跨 sample 狀態結構(Phase 2/3)。
+- `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。
 - low/high 參數的實際數值(Phase 4,調出好聽範圍)。
+- wobble 中間運算型別寬度（Phase 3）。
 - wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。
