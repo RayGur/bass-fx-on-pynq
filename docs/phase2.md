@@ -172,19 +172,17 @@ def run_realtime(audio_ip, seconds=10.0):
 - [x] 執行 HLS Synthesis，確認無 Error，資源合理（DSP×2，LUT 1%，timing 6.57 ns，2026-06-08）
 
 ### Step B — Rebuild Bitstream
-- [ ] Vivado：Export IP → Refresh IP（更新 `process_sample_0`）
-- [ ] Generate Bitstream 成功
-- [ ] `bass_fx.bit` + `bass_fx.hwh` 傳板
+- [x] Vivado：Export IP → Refresh IP（更新 `process_sample_0`）
+- [x] Generate Bitstream 成功
+- [x] `bass_fx.bit` + `bass_fx.hwh` 傳板
 
 ### Step C — 上板驗證
-- [ ] Overlay 載入正常
-- [ ] 執行 `set_distortion(0.5, 4); enable_distortion(True)`
-- [ ] 執行 `run_realtime(audio, 10.0)`，接 JB62 + amp
-- [ ] 能聽到失真（vs passthrough 有明顯差異）
-- [ ] 調 gain（1 vs 20）能聽到失真程度變化
-- [ ] 調 threshold（0.1 vs 0.8）能聽到截點變化
-- [ ] 切 sw[0] OFF → 聲音恢復 passthrough
-- [ ] 無爆音、無溢位
+- [x] Overlay 載入正常
+- [x] AXI-Lite sanity check PASS（6/6，`verify_distortion()`）
+- [x] 能聽到失真（threshold=0.1, gain=20 明顯可辨）
+- [x] 調參數聽感有變化（0.1/20 vs 0.7/3 差異明顯）
+- [x] 無爆音、無溢位
+- [x] **Phase 2 Exit Criteria PASS**
 
 ---
 
@@ -192,7 +190,7 @@ def run_realtime(audio_ip, seconds=10.0):
 
 | 項目 | 說明 |
 |------|------|
-| 音質 dropout | 同 Phase 1：Python PIO 掉 sample，Phase 6 DMA 修 |
+| 音質 dropout | Python PIO ~4400 frames/s vs 48000 Hz，大量掉 frame；實測無 distortion 時已明顯破音，有 distortion 時更破但仍可辨識效果。Phase 6 DMA 根本解 |
 | stereo 處理 | 目前 `out_r = out_l`（mono bass 複製），Phase 2 維持此做法 |
 | state_t | Phase 2 不需要跨 sample 狀態，`state` 參數傳入後不使用 |
 | wobble 路徑 | `wobble_en` 目前仍是 passthrough（Phase 1 骨架）；Phase 3 由 Claire 填入 |

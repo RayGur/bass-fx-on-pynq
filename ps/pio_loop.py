@@ -320,6 +320,69 @@ def py_play(audio_ip, buf, n_frames):
 
 
 # ------------------------------------------------------------------ #
+#  Phase 2: Distortion control helpers                                #
+# ------------------------------------------------------------------ #
+
+def set_distortion(threshold_float=0.5, gain_int=4):
+    """
+    Set distortion parameters via AXI-Lite.
+    threshold_float : clip point in [-1, +1), e.g. 0.3
+    gain_int        : integer multiplier 1-20
+    """
+    thresh_raw = int(threshold_float * (1 << 23)) & 0xFFFFFF
+    effect.write(ADDR_THRESHOLD, thresh_raw)
+    effect.write(ADDR_GAIN,      gain_int)
+
+def enable_distortion(on=True):
+    """Enable or disable distortion (dist_en AXI-Lite bit)."""
+    effect.write(ADDR_DIST_EN, 1 if on else 0)
+
+def verify_distortion():
+    """
+    Static AXI-Lite sanity check for Phase 2.
+    Tests clip, no-clip, and bypass cases using run_effect().
+    Returns True if all pass.
+    """
+    tol = 0.001
+    results = []
+
+    def check(label, in_l, thr, gain, expected_l, dist_on=True):
+        set_distortion(thr, gain)
+        enable_distortion(dist_on)
+        out_l, _ = run_effect(in_l, in_l)
+        ok = abs(out_l - expected_l) < tol
+        status = "PASS" if ok else "FAIL"
+        print("  [{}] {}  in={:.3f} thr={:.2f} gain={}  expected={:.4f} got={:.4f}".format(
+              status, label, in_l, thr, gain, expected_l, out_l))
+        results.append(ok)
+
+    print("--- Phase 2 distortion sanity check ---")
+
+    # bypass: dist_en=False, output must equal input
+    check("bypass",        0.5,  0.5, 1, 0.5,  dist_on=False)
+    check("bypass neg",   -0.5,  0.5, 1, -0.5, dist_on=False)
+
+    # hard clip: amp >> threshold → output ≈ threshold
+    check("clip positive", 0.5,  0.3, 4, 0.3)   # amp=2.0 → clipped to 0.3
+    check("clip negative", -0.5, 0.3, 4, -0.3)  # amp=-2.0 → clipped to -0.3
+
+    # no clip: amp < threshold → output ≈ in * gain
+    check("no-clip",       0.05, 0.5, 4, 0.2)   # amp=0.2 < 0.5 → pass through
+
+    # max gain, still clips
+    check("max-gain clip", 0.5, 0.3, 20, 0.3)   # amp=10.0 → clipped to 0.3
+
+    passed = sum(results)
+    total  = len(results)
+    print("--- {}/{} passed ---".format(passed, total))
+
+    # restore safe defaults
+    enable_distortion(False)
+    set_distortion(0.5, 4)
+    return passed == total
+
+
+# ------------------------------------------------------------------ #
 #  Batch audio processing (Phase 1 Exit Criteria verification)        #
 # ------------------------------------------------------------------ #
 
@@ -376,6 +439,11 @@ if __name__ == "__main__":
     print("  in_r=-0.5000  out_r={:.4f}  {}".format(out_r, ok_r))
     print()
 
+    # Phase 2: distortion AXI-Lite sanity check (no codec needed)
+    print("Phase 2 distortion sanity check:")
+    dist_ok = verify_distortion()
+    print()
+
     # Codec init + audio test
     try:
         audio = init_audio(ol)
@@ -383,13 +451,18 @@ if __name__ == "__main__":
         print("Codec init failed: {}".format(e))
         audio = None
 
-    if audio is not None:
+    if audio is not None and dist_ok:
         print()
-        print("Phase 1 audio passthrough test (3 seconds).")
-        print("Play audio into line-in now...")
+        print("Phase 2 audio distortion test (3 seconds).")
+        print("Set sw[0]=ON on the board to enable distortion, then play bass...")
+        set_distortion(threshold_float=0.3, gain_int=8)
+        enable_distortion(True)
         time.sleep(1)
         process_audio_block(audio, seconds=3.0)
+        enable_distortion(False)
         print()
-        print("Phase 1 Exit Criteria: playback should match a bypass.")
-    else:
+        print("Phase 2 Exit Criteria: playback should sound distorted vs passthrough.")
+    elif audio is None:
         print("Fix codec init before audio test.")
+    else:
+        print("Distortion sanity check FAILED — fix before audio test.")
