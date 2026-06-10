@@ -383,6 +383,85 @@ def verify_distortion():
 
 
 # ------------------------------------------------------------------ #
+#  Phase 3: Wobble control helpers                                    #
+# ------------------------------------------------------------------ #
+
+def set_wobble(rate_hz=1.0, depth_pct=70):
+    """
+    Set wobble parameters via AXI-Lite.
+    rate_hz  : LFO rate (Hz), 0.1–5.0
+    depth_pct: sweep depth (%), 0–100
+    """
+    lfo_step = int(rate_hz * (1 << 32) / 48000)
+    effect.write(ADDR_LFO_RATE,  lfo_step)
+    effect.write(ADDR_LFO_DEPTH, depth_pct)
+
+def enable_wobble(on=True):
+    """Enable or disable wobble (wobble_en AXI-Lite bit)."""
+    effect.write(ADDR_WOBBLE_EN, 1 if on else 0)
+
+def verify_wobble():
+    """
+    Static AXI-Lite sanity check for Phase 3.
+    Checks that wobble-off passes signal through unchanged,
+    and wobble-on produces a different output (IIR filters the signal).
+    Returns True if all pass.
+    """
+    results = []
+
+    def check(label, ok, detail=""):
+        status = "PASS" if ok else "FAIL"
+        print("  [{}] {}{}".format(status, label, "  " + detail if detail else ""))
+        results.append(ok)
+
+    print("--- Phase 3 wobble sanity check ---")
+
+    # bypass: wobble_en=False, output must equal input
+    enable_wobble(False)
+    set_wobble(1.0, 70)
+    out_l, _ = run_effect(0.5, 0.5)
+    check("bypass", abs(out_l - 0.5) < 0.002,
+          "in=0.5000 out={:.4f}".format(out_l))
+
+    enable_wobble(False)
+    out_l, _ = run_effect(-0.3, -0.3)
+    check("bypass neg", abs(out_l + 0.3) < 0.002,
+          "in=-0.3000 out={:.4f}".format(out_l))
+
+    # wobble on: IIR lowpass should attenuate (output != input)
+    enable_wobble(True)
+    set_wobble(1.0, 70)
+    out_l, _ = run_effect(0.5, 0.5)
+    check("wobble attenuates", abs(out_l - 0.5) > 0.001,
+          "in=0.5000 out={:.4f} (should differ)".format(out_l))
+
+    # output must stay in range
+    check("no overflow", abs(out_l) <= 1.0,
+          "out={:.4f}".format(out_l))
+
+    # different rate should produce different output after a few samples
+    set_wobble(0.5, 60)
+    for _ in range(10):
+        run_effect(0.5, 0.5)
+    out_slow, _ = run_effect(0.5, 0.5)
+
+    set_wobble(4.0, 60)
+    for _ in range(10):
+        run_effect(0.5, 0.5)
+    out_fast, _ = run_effect(0.5, 0.5)
+
+    check("rate affects output", out_slow != out_fast,
+          "slow={:.4f} fast={:.4f}".format(out_slow, out_fast))
+
+    enable_wobble(False)
+
+    passed = sum(results)
+    total  = len(results)
+    print("--- {}/{} passed ---".format(passed, total))
+    return passed == total
+
+
+# ------------------------------------------------------------------ #
 #  Batch audio processing (Phase 1 Exit Criteria verification)        #
 # ------------------------------------------------------------------ #
 
@@ -424,14 +503,18 @@ def process_audio_block(audio_ip, seconds=3.0):
 # ------------------------------------------------------------------ #
 
 if __name__ == "__main__":
+    # NOTE: This overlay is Phase 1 + wobble only (no distortion).
+    # dist_en stays 0 throughout.
     print("Addresses:")
     print("  Effect IP  : {}".format(hex(EFFECT_BASE)))
     print("  AXI GPIO 0 : {}  (sw / btn)".format(hex(GPIO0_BASE)))
     print("  AXI GPIO 1 : {}  (led)".format(hex(GPIO1_BASE)))
     print()
 
-    # Effect IP sanity check
-    print("Effect IP sanity check (0.5, -0.5):")
+    # Effect IP passthrough sanity check (wobble_en=0, dist_en=0)
+    enable_distortion(False)
+    enable_wobble(False)
+    print("Effect IP passthrough sanity check (0.5, -0.5):")
     out_l, out_r = run_effect(0.5, -0.5)
     ok_l = "OK" if abs(out_l - 0.5)  < 0.001 else "MISMATCH"
     ok_r = "OK" if abs(out_r + 0.5)  < 0.001 else "MISMATCH"
@@ -439,9 +522,9 @@ if __name__ == "__main__":
     print("  in_r=-0.5000  out_r={:.4f}  {}".format(out_r, ok_r))
     print()
 
-    # Phase 2: distortion AXI-Lite sanity check (no codec needed)
-    print("Phase 2 distortion sanity check:")
-    dist_ok = verify_distortion()
+    # Phase 3: wobble AXI-Lite sanity check (no codec needed)
+    print("Phase 3 wobble sanity check:")
+    wobble_ok = verify_wobble()
     print()
 
     # Codec init + audio test
@@ -451,18 +534,18 @@ if __name__ == "__main__":
         print("Codec init failed: {}".format(e))
         audio = None
 
-    if audio is not None and dist_ok:
+    if audio is not None and wobble_ok:
         print()
-        print("Phase 2 audio distortion test (3 seconds).")
-        print("Set sw[0]=ON on the board to enable distortion, then play bass...")
-        set_distortion(threshold_float=0.3, gain_int=8)
-        enable_distortion(True)
+        print("Phase 3 audio wobble test (3 seconds).")
+        print("Play bass into line-in — you should hear a periodic wah sweep...")
+        set_wobble(rate_hz=1.0, depth_pct=70)
+        enable_wobble(True)
         time.sleep(1)
         process_audio_block(audio, seconds=3.0)
-        enable_distortion(False)
+        enable_wobble(False)
         print()
-        print("Phase 2 Exit Criteria: playback should sound distorted vs passthrough.")
+        print("Phase 3 Exit Criteria: playback should sound like a wah sweep.")
     elif audio is None:
         print("Fix codec init before audio test.")
     else:
-        print("Distortion sanity check FAILED — fix before audio test.")
+        print("Wobble sanity check FAILED — fix before audio test.")

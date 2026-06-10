@@ -113,7 +113,10 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - ✅ 上板 AXI-Lite 控制驗證 PASS（6/6 sanity check）
   - ✅ **Phase 2 Exit Criteria PASS**：threshold=0.1, gain=20 失真明顯可辨（batch mode，音質差為 Python PIO 掉 frame，非 distortion bug）
   - **技術債**：threshold decode 須用 `.range()` raw bit assign（值轉換會 overflow），已記錄於 `docs/phase2.md`
-- 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
+- 🔄 **Phase 3**:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)— **進行中**
+  - ✅ `pio_loop.py` 加入 `set_wobble()` / `enable_wobble()` / `verify_wobble()`（`test/wobble` branch）
+  - ❌ 上板測試：bypass 不通（wobble 旁通邏輯問題，`process_sample.cpp` wobble 路徑仍為註解）
+  - 🔲 等待 Claire 提供修改後的 `wobble.cpp` + `process_sample.cpp` → 貼到 `test/wobble` 後繼續
 - 🔲 Phase 4:按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
 - 🔲 Phase 5:效果串接(2 switch 同開,需 P2/P3 各自通過)
 - 🔲 Phase 6:A→B 升級(DMA + 雙緩衝 + 中斷)— **必要步驟**；時間不夠時 fallback 為 C PIO
