@@ -79,10 +79,20 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 ## 版本控制
 
 - Repo:https://github.com/RayGur/bass-fx-on-pynq.git
-- 功能開新 branch,完成一小塊就 commit。
-- merge 開 PR,push 前告訴 Ray。
 - **進 Git**:HLS C source、tcl、PS 程式、docs。
 - **不進 Git**:`.bit` / `.hwh` 等 binary(另行共享;`.bit` 與 `.hwh` 須同名成對)。
+
+### Branch 規則
+
+- `main`：穩定版本，只接受已通過 Exit Criteria 的 merge。
+- 功能 / Phase / 實驗一律開新 branch，命名慣例：
+  - `phase<N>/<簡述>`（如 `phase3/wobble-iir`）
+  - `fix/<簡述>`（如 `fix/bypass-logic`）
+  - `test/<簡述>`（如 `test/wobble`）
+- 對應功能 / Phase 只在對應的branch開發，每次開發前都須確認當前branch
+- **Claude Code 不直接 push 到 `main`**；需要 merge 時開 PR，push 前通知 Ray。
+- 每完成一個可獨立驗證的小塊就 commit，（如 `add: iir core`）。
+- PR merge 條件：對應 Phase 的 Exit Criteria 全部通過。
 
 ---
 
