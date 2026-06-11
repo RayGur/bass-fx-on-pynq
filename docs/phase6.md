@@ -251,6 +251,13 @@ axi_dma_0 s2mm_introut ↗
 
 ## 6. Step 4 — PS C 程式（`audio_dma.c`）
 
+> ⚠️ **已知未解問題（D22，待討論）**：C 程式需要分配 DMA-safe buffer 並做 cache flush/invalidate（HP port 無 HW coherency）。調查過的方案：
+> - **udmabuf**：架構最乾淨，但 PYNQ cross-compiled kernel 缺 `modpost` binary，板上無法直接 `make modules`。
+> - **xlnk**（`/dev/xlnk`）：已在板上存在，但已被 XRT 取代，長期可靠性待確認。
+> - **ACP port**：HW coherent，不需 software cache op，但需 Vivado BD 額外設定。
+>
+> 以下程式骨架以 udmabuf 為假設前提，**buffer 分配與 cache 操作部分標記 TODO，待 D22 定案後補齊**。
+
 ### 6.1 整體結構
 
 ```c

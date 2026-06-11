@@ -324,6 +324,23 @@
 
 ---
 
+## D22. Phase 6 PS 端 CMA buffer 分配與 cache 管理：待討論
+
+- **背景**：C + DMA 架構下，PS C 程式需要（1）分配 DMA-safe（physically contiguous）buffer，（2）在 DMA 傳輸前後做 cache flush / invalidate（HP port 無 hardware coherency，見 D21）。Python 透過 `pynq.allocate()` 解決，但 C 程式不能直接呼叫 Python API。
+- **調查結論**：
+  - **udmabuf**（https://github.com/ikwzm/udmabuf）：Linux kernel module，提供 `/dev/udmabuf0` 字元裝置，C 程式透過 `mmap` + `ioctl` 分配 CMA buffer 並做 cache sync。架構最乾淨，C 可獨立完成所有操作。
+    - 問題：PYNQ 4.19 kernel 為 cross-compiled，`scripts/mod/modpost` binary 不在板上（是 x86 binary，ARM 無法執行），導致無法在板上直接 `make modules` 編譯 udmabuf.ko。
+    - 錯誤訊息：`/bin/sh: 1: scripts/mod/modpost: not found`
+    - 嘗試從 source 手動編譯 modpost 失敗（kernel header 與 glibc header 衝突）。
+  - **xlnk**（`/dev/xlnk`）：PYNQ 自帶，built-in kernel driver，提供 ioctl 分配 CMA + cache flush/invalidate。已確認 `/dev/xlnk` 存在於板上。**但 xlnk 已被 XRT 取代**，長期可靠性存疑。
+  - **ACP port**：hardware coherent，不需 software cache management，但 Vivado BD 需額外設定 AxCACHE 訊號（接 Constant IP = `0b0011`）。
+- **待討論**：udmabuf 的 cross-compilation 可行性（WSL + ARM cross-compiler）、或改用 ACP port、或研究 XRT 的 C 介面。
+- **參考**：
+  - udmabuf repo：https://github.com/ikwzm/udmabuf
+  - modpost cross-compilation issue：PYNQ kernel 4.19.0-xilinx-v2019.1
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
 - `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。
@@ -332,3 +349,4 @@
 - wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。
 - Phase 6 DMA base address（Vivado Address Editor 重新 build 後確認）。
 - Phase 6 HLS 合成後 AXI-Lite parameter offsets 是否有變（重新 synthesis 後確認 `xprocess_sample_hw.h`）。
+- **D22 待討論**：PS C 程式的 CMA buffer 分配與 cache 管理方案（udmabuf cross-compile / ACP port / XRT）。
