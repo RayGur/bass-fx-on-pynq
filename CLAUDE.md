@@ -116,7 +116,10 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 - 🔲 Phase 3:wobble(一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth)
 - 🔲 Phase 4:按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
 - 🔲 Phase 5:效果串接(2 switch 同開,需 P2/P3 各自通過)
-- 🔲 Phase 6:A→B 升級(DMA + 雙緩衝 + 中斷)— **必要步驟**；時間不夠時 fallback 為 C PIO
+- 🔄 **Phase 6**:A→B 升級(C + DMA + 雙緩衝 + 中斷)— **進行中**（branch: `phase6/dma-upgrade`）
+  - 架構方向定案：C + DMA（見 D18–D21，docs/phase6.md）
+  - 已確認板上：`pynq.allocate()` 可用、flush/invalidate 存在、gcc 7.3.0 可用
+  - 下一步：HLS top function 改 AXI-Stream 外殼（Step A）
 
 > 進度隨開發更新。
 

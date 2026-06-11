@@ -246,9 +246,89 @@
 
 ---
 
+## D18. Phase 6 傳輸架構：C + DMA
+
+- **背景**：Python PIO 音質不可接受（D15）；Phase 6 需決定升級路線。
+- **選項**：
+  - A) C PIO：PS C 程式輪詢 `audio_codec_ctrl`，逐 sample 透過 AXI-Lite 送 Effect IP。C loop < 1 μs/次，48kHz 完全跟得上。但沒有展示 DMA 技術，CPU 仍被佔用。
+  - B) C + DMA：PS C 程式輪詢 codec 填 buffer，DMA 批次送 Effect IP（AXI-Stream），DMA 收回結果，PS 寫回 codec。CPU 解放；展示 DMA 技術。
+  - C) Full hardware stream：換 I2S IP（有 AXI-Stream 輸出），codec → AXI-Stream → Effect IP → AXI-Stream → codec，PS 完全不碰音訊資料。
+- **決定**：選 B（C + DMA）。
+- **理由**：
+  - A 可行但無法展示 DMA（專案技術亮點之一，project_plan.md 第 6.3 節）。
+  - B 對既有 `audio_codec_ctrl` 零改動（已驗證可用），codec 側 C 輪詢足夠快，DMA 只負責 Effect IP 側的批次搬運。
+  - C 需更換 `audio_codec_ctrl`，I2S timing 在 Phase 1 已踩坑（D12），風險過高；Vivado 2022.2 IP Catalog 中對應 IP 未經確認。
+  - 板上已驗證：`pynq.allocate()` 可用（paddr=0x18049000，64-byte 對齊），`flush()`/`invalidate()` 方法存在，gcc 7.3.0 可用。
+- **架構圖**：
+  ```
+  codec ←I2S→ audio_codec_ctrl ←MMIO→ PS C 輪詢
+                                            ↕ DRAM buffer (ping-pong)
+                                        AXI DMA (MM2S / S2MM)
+                                            ↕ AXI-Stream
+                                    [AXI Stream FIFO]（解耦時序）
+                                            ↕ AXI-Stream
+                                        Effect IP (HLS)
+                                            ↕ AXI-Lite（參數，不動）
+  ```
+- **參考**：
+  - PYNQ DMA 官方文件：https://pynq.readthedocs.io/en/v2.5/pynq_libraries/dma.html
+  - cathalmccabe PYNQ DMA Tutorial Part 1：https://discuss.pynq.io/t/tutorial-pynq-dma-part-1-hardware-design/3133
+  - Audio-Lab-PYNQ（PYNQ-Z2 音訊 DMA 參考專案）：https://github.com/cramsay/Audio-Lab-PYNQ
+
+---
+
+## D19. Phase 6 DMA buffer 大小：256 samples
+
+- **背景**：buffer 越小延遲越低，但 DMA overhead 比例越高；越大則反之。
+- **決定**：256 samples/buffer（每個 stereo frame，含 L+R 各 256 words，共 512 × 4 = 2048 bytes per DMA）。
+- **理由**：
+  - 延遲 = 256 / 48000 ≈ 5.3 ms，遠低於 100 ms 目標（project_plan.md 第 7.1 節）。
+  - 音訊 DSP 社群對 48kHz 系統的推薦折衷點為 256–512 samples。
+  - 2048 bytes 遠大於 DMA descriptor 最小粒度，burst 效率高。
+- **可調整**：實測若出現 underrun 可增至 512（10.7 ms），仍在目標內。
+- **參考**：
+  - Audio DSP buffer sizing practice：https://audiodsplab.wordpress.com/ping-pong-buffer-audio-stream/
+  - PYNQ Workshop Session 4 DMA：https://github.com/Xilinx/PYNQ_Workshop/blob/master/Session_4/6_dma_tutorial.ipynb
+
+---
+
+## D20. Phase 6 跨 buffer 狀態：HLS static 變數
+
+- **背景**：IIR 前一輸出（wobble）和 LFO 相位（wobble）需要跨 DMA buffer 保留。Phase 6 前這些在 `state_t` 裡由 AXI-Lite 從 PS 傳入，DMA 模式下每 buffer 讀寫一次 AXI-Lite 的成本可接受，但 HLS static 更乾淨。
+- **選項**：
+  - A) HLS `static state_t state = {0}`：在 HLS top function 內宣告，自動跨 call 保留，合成成 register。
+  - B) PS 每次 buffer 前後透過 AXI-Lite 讀回 / 寫入 state。
+- **決定**：選 A（static）。
+- **理由**：static 合成成暫存器（非 BRAM），HLS 已知支援此模式，且 IIR/LFO 狀態本就屬於 IP 內部狀態，不需 PS 介入。Phase 6 後 AXI-Lite `state` port 可移除。
+- **注意**：static 在 HLS 模擬中初始化一次；RTL 中 reset 行為需確認（通常 ap_rst 時清零）。
+- **參考**：
+  - Hackaday IIR Audio Processing with static state：https://hackaday.io/project/166515-audio-processing-with-the-snickerdoodle/details
+  - Xilinx HLS UG1399（static variable synthesis）：https://docs.amd.com/r/en-US/ug1399-vitis-hls/How-AXI4-Stream-is-Implemented
+
+---
+
+## D21. Phase 6 兩個已知關鍵陷阱
+
+- **陷阱 1：TLAST 未設 → DMA recvchannel.wait() 永遠 hang**
+  - 根本原因：AXI DMA S2MM channel 等待 TLAST 訊號才認定 packet 結束；HLS IP 若沒在最後一個 sample 設 `pkt.last = 1`，DMA 永遠不知道 packet 結束，程式卡死。
+  - 解法：HLS stream loop 在 `i == n_samples - 1` 時設 `pkt.last = 1`，其餘設 0。
+  - 來源：Element14 Vitis HLS + DMA Training Part 2：https://community.element14.com/technologies/fpga-group/b/blog/posts/pynq-and-zynq-the-vitis-hls-accelerator-with-dma-training---part-2-add-the-accelerated-ip-to-a-vivado-design
+
+- **陷阱 2：HP port 無 cache coherency → 資料讀寫錯亂**
+  - 根本原因：Zynq-7000 HP port 不自動同步 CPU cache，PS 寫入 buffer 後 PL 可能讀到 stale cache，PL 寫完 PS 可能讀到 stale cache。
+  - 解法：
+    - PS 寫完 input buffer 後、DMA 讀之前：`in_buf.flush()`
+    - DMA 寫完 output buffer 後、PS 讀之前：`out_buf.invalidate()`
+  - `pynq.allocate()` 回傳的 `PynqBuffer` 物件有這兩個方法，直接呼叫。
+  - 來源：PYNQ discuss cache coherency：https://discuss.pynq.io/t/cache-coherency-in-pynq-image-using-pynq-z2-board-ethernet-bring-up/4078
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
 - `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。
 - low/high 參數的實際數值(Phase 4,調出好聽範圍)。
 - wobble 中間運算型別寬度（Phase 3）。
 - wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。
+- Phase 6 DMA base address（Vivado Address Editor 重新 build 後確認）。
+- Phase 6 HLS 合成後 AXI-Lite parameter offsets 是否有變（重新 synthesis 後確認 `xprocess_sample_hw.h`）。
