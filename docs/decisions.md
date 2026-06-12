@@ -352,6 +352,38 @@
 
 ---
 
+## D23. Phase 6 除錯：TKEEP=0 → S2MM 不寫 DDR
+
+- **背景**：Phase 6 DMA 接線完成後，S2MM 呈現「IOC 正常 fire、S2MM_SR LEN=0、無 AXI 錯誤，但 `out_buf` 內容永遠是初始化哨兵值（0x12345678）」。透過 `/dev/mem` 直讀實體位址確認是 DDR 本身未被寫入，排除 cache 問題。
+- **排除過的根因**：
+  - T1 cache（`cma_alloc(size, 0)` non-cacheable；`/dev/mem` 直讀仍是哨兵）
+  - T2 實體位址錯誤（雙向驗證通過）
+  - T3 HP0 寬度不匹配（從 64-bit 改 32-bit，結果相同）
+  - T4 BD 連線遺漏（重新 export TCL 確認 `axis_data_fifo_1` 連線正確）
+  - T5 AXI-Lite offset 錯誤（對照 `xprocess_sample_hw.h` 確認全部正確）
+  - T6 Effect IP 未運行（若 `s_out` 空，S2MM 會 hang 而非完成；IOC 能 fire 代表 IP 有輸出）
+- **根本原因**：`process_sample.cpp` 的輸出 packet 建構：
+  ```cpp
+  audio_pkt_t out_l_pkt;
+  out_l_pkt.data = 0;
+  out_l_pkt.data.range(23, 0) = out_l.range(23, 0);
+  // out_l_pkt.keep 未設 → HLS 合成後為 0
+  out_l_pkt.last = 0;
+  ```
+  `ap_axis<32,0,0,0>` 的 `.keep`（4-bit）若不顯式設值，Vitis HLS 合成後在輸出 TKEEP 線預設驅動 0。AXI DMA 內部的 DataMover IP 將 TKEEP 映射到 AXI4 WSTRB；WSTRB=0 代表所有 byte enable 無效 → Zynq HP0 接受交易（BRESP=OKAY，S2MM 認為成功，IOC fire），但不寫入 DDR 任何位元組。
+- **決定**：在每個輸出 packet 建構後立即設 `out_l_pkt.keep = ~0`（`out_r_pkt.keep = ~0`），確保 TKEEP=0xF（32-bit stream 的 4 個 byte lane 全有效）。
+- **修正位置**：`hls/effect_ip/process_sample.cpp`，`process_sample()` top function 的 stream loop 內。
+- **注意**：此 bug 無法被以下機制偵測：
+  - HLS C Sim（sim 直接讀 `.data`，不走 DMA 硬體）
+  - `validate_bd_design`（只驗連線，不驗 HLS 內部）
+  - DMA 錯誤旗標（S2MM_SR 無 error bits，AXI 有正常 BRESP）
+- **影響**：需重新 HLS 合成 → Vivado Refresh IP → Generate Bitstream → 重新上板。
+- **參考**：
+  - Xilinx AXI DataMover PG022：TKEEP → WSTRB 映射說明
+  - UG1399 ap_axis 說明：.keep 欄位預設行為
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
 - `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。

@@ -361,38 +361,165 @@ effect.write(ADDR_GAIN,      8)
 | IIR state 跨 buffer 重置 | 每個 buffer 開頭有咔噠聲 | HLS `static state_t state` 確認有在 synthesis 保留 |
 | II 不等於 1 | throughput 不足（256 samples @ 100MHz 需 512 cycles）| 避免 loop 內 double-read，改奇偶 index 版本 |
 | AXI Stream FIFO 深度不足 | S2MM backpressure 導致 DMA stall | FIFO depth ≥ 2 × n_samples |
+| **TKEEP=0（本次根因）** | S2MM IOC 正常 fire、LEN=0，但 out_buf 永遠不更新，無 AXI error | HLS `ap_axis` 輸出 packet 必須顯式設 `.keep = ~0`；見 §10 |
+
+---
+
+## 10. 上板除錯紀錄（Step C / D 期間）
+
+> 本節記錄 2026-06-13 的完整試錯過程，供日後參考。
+
+### 10.1 症狀
+
+執行 `sudo ./audio_dma` 後：
+- DMA MM2S IOC 正常觸發（`MM2S_SR=0x00001002`，LEN remaining=0）
+- DMA S2MM IOC 正常觸發（`S2MM_SR=0x00001002`，dec=0 slv=0 int=0，LEN remaining=0）
+- Effect IP `EFFECT_CTRL=0x81`（ap_start=1 auto_restart=1，ap_idle=0，ap_done=0）
+- **但 `out_buf[0][0]` 從頭到尾都等於 sentinel 值，DMA 沒有寫入 DDR**
+- 耳機接上時爆音（codec TX 收到未初始化的 out_buf）
+
+### 10.2 試錯過程與排除
+
+#### T1：Cache coherency（cacheable=1 + flush/invalidate）
+
+**假設**：out_buf 是 cacheable，DMA 寫入 DDR 但 CPU 讀到 cache stale value。  
+**測試**：改用 `cma_alloc(size, 0)`（non-cacheable），移除 flush/invalidate。  
+**結果**：symptom 不變；後來加入 `/dev/mem` cross-check 確認 DDR 內容本身就等於 sentinel → 不是 cache 問題。  
+**排除**：確認。
+
+#### T2：Physical address 錯誤（cma_get_phy_addr 回傳不對）
+
+**假設**：`cma_get_phy_addr()` 回傳的 phys addr 與 CPU virt addr 對應的不是同一塊 DDR。  
+**測試**：加入雙向 phys-verify：
+```
+[phys-verify] wrote 0xDEADBEEF via virt → /dev/mem@0x1804a000 reads 0xdeadbeef  ✓
+[phys-verify] wrote 0xCAFEBABE via /dev/mem → virt reads 0xcafebabe  ✓
+```
+**結果**：兩個方向都對得上。  
+**排除**：確認。
+
+#### T3：HP0 data width 不匹配（64-bit vs 32-bit）
+
+**假設**：DMA M_AXI 是 32-bit，HP0 設定 64-bit，axi_mem_intercon 做 width conversion 時 WSTRB 位移導致寫入失敗。  
+**測試**：在 Vivado PS7 customization 把 S_AXI_HP0_DATA_WIDTH 從 64 改為 32，重新 Generate Bitstream。  
+**結果**：symptom 完全相同，無改善。  
+**排除**：確認（HP0 32-bit 改法是對的，但不是根因）。
+
+#### T4：BD 未包含 axis_data_fifo_1（S2MM 路徑斷線）
+
+**假設**：DMA S_AXIS_S2MM 沒有接到 process_sample_0/s_out，S2MM 永遠收不到資料。  
+**調查方法**：從 Vivado TCL Console 執行 `write_bd_tcl ~/bass_fx_bd_export.tcl`，比對連線。  
+**第一次 TCL（舊版）**：的確沒有 axis_data_fifo_1、也沒有 s_out 的接線——但那是舊版匯出，不反映當時的 Vivado 專案狀態。  
+**第二次 TCL（重新匯出）**：確認 `axis_data_fifo_1` 存在，`s_out → fifo_1 → S_AXIS_S2MM` 完整接線。  
+**排除**：BD 連線本身正確，不是根因。  
+**副作用**：第一次 TCL 也讓人懷疑 `c_include_sg` 可能是 1（SG mode），因為舊 TCL 有 `M_AXI_SG` 連線。重新匯出後確認 `c_include_sg {0}`，SG mode 理論排除。
+
+#### T5：AXI-Lite 位址不符（n_samples 沒寫到正確 offset）
+
+**假設**：`EFFECT_N_SAMPLES = 0x10` 等 define 和 HLS 產出的實際 offset 不符，IP 用到錯誤的 n_samples。  
+**調查**：讀取 `hls/effect_ip/.../xprocess_sample_hw.h`，確認 HLS 產出的 offset 完全與 audio_dma.c 相符。  
+**加入 readback 診斷**：
+```
+[init] effect readback: n_samples=256 dist_en=0 CTRL=0x00000081
+```
+n_samples 確認正確。  
+**排除**：確認。
+
+#### T6：Effect IP 從未執行（永遠卡在 s_in.read()）
+
+**假設**：AP_START 設了但 IP 沒有處理任何資料，s_out/fifo_1 空的，S2MM 等不到 TVALID 永遠不完成。  
+**矛盾**：S2MM IOC 已 fire 且 LEN=0，若 fifo_1 空的 S2MM 應該 hang，不可能在有限時間內完成。  
+**結論**：IP 確實有在產出資料到 fifo_1（否則 S2MM 不會完成），但這些資料寫進 DDR 時沒有效果。  
+**排除（部分）**：IP 有輸出，但輸出到 DDR 的過程出問題。
+
+### 10.3 根因：TKEEP = 0（ap_axis .keep 未初始化）
+
+**觸發因子**：`process_sample.cpp` 的輸出 packet 只設了 `.data` 和 `.last`，**沒有設 `.keep`**：
+
+```cpp
+// 原始有問題的程式碼
+audio_pkt_t out_l_pkt, out_r_pkt;
+out_l_pkt.data = 0;
+out_l_pkt.data.range(23, 0) = out_l.range(23, 0);
+out_l_pkt.last = 0;   // .keep 沒設 → HLS 合成預設 0
+```
+
+**因果鏈**：
+```
+.keep 未設 → HLS RTL 合成 TKEEP = 0
+  → AXI DMA S2MM 收到 TKEEP=0
+  → S2MM 把 TKEEP 對應到 AXI4 WSTRB=0（Byte Enable 全關）
+  → HP0 收到 WSTRB=0 的寫入事務 → 接受事務（BRESP=OKAY，無 error）但不更新 DDR
+  → S2MM IOC fire（事務完成），LEN=0，dec=0 slv=0 int=0（全部正常）
+  → 但 DDR 內容不變（sentinel 永遠是 0x12345678）
+```
+
+**確認依據**：
+- `/dev/mem` cross-check：`/dev/mem@out_phys reads 0x12345678`（DDR 本身就沒被寫）
+- AXI 協議：WSTRB=0 是合法事務，HP0 正確回覆 OKAY 但不寫 byte
+- 無 AXI error（dec/slv/int 全 0）完全符合此場景
+- C sim testbench 不會發現此 bug（simulation 直接讀 `.data`，不過 DMA 硬體邏輯）
+
+### 10.4 修正
+
+**`process_sample.cpp`**（已更新）：
+
+```cpp
+// 修正後
+out_l_pkt.keep = ~0;   // 全部 byte enable 有效（TKEEP=0xF for 32-bit）
+out_r_pkt.keep = ~0;
+```
+
+### 10.5 後續待完成
+
+1. Vitis HLS：重新 C Sim → Run Synthesis → Export IP
+2. Vivado：Refresh IP → Generate Bitstream → scp 上板
+3. 重跑 `codec_init.py` + `audio_dma`，確認 `out_buf[0][0]` 顯示 codec 音訊值（非 sentinel）
+4. 確認 passthrough 音訊正常後，開啟 `DEFAULT_DIST_EN 1` 測試 distortion
+
+### 10.6 診斷工具（本次開發，保留在 audio_dma.c）
+
+目前 `ps/audio_dma.c` 包含下列診斷，待 DMA 驗證通過後可選擇移除：
+- `[phys-verify]`：雙向 virt↔/dev/mem 驗證實體位址
+- `[init] effect readback`：確認 AXI-Lite 寫入有效
+- `[diag:before-boot]` / `[diag:after-boot-dma]`：DMA SR + Effect CTRL 狀態
+- `[dma] S2MM_DA readback` / `MM2S_SA readback`：確認 DA/SA 暫存器正確
+- `[boot] /dev/mem@...`：確認 DDR 實際寫入狀態（T1/T6 關鍵診斷）
 
 ---
 
 ## 8. 實作 Checklist
 
 ### Step A — HLS 修改
-- [ ] `process_sample.cpp` 改成 stream top function（外殼 loop）
-- [ ] `effect_ip.h` 新增 `process_sample_core()` 宣告
-- [ ] 原 `process_sample()` 邏輯移入 `process_sample_core()`
-- [ ] HLS C Simulation PASS（stream testbench，驗 TLAST + output 正確）
-- [ ] RTL Synthesis：確認 II=1，LUT/DSP 用量合理
-- [ ] 確認 synthesis report 中 static state 保留（非 ROM）
-- [ ] Export IP
+- [x] `process_sample.cpp` 改成 stream top function（外殼 loop）
+- [x] `effect_ip.h` 新增 `process_sample_core()` 宣告
+- [x] 原 `process_sample()` 邏輯移入 `process_sample_core()`
+- [x] HLS C Simulation PASS（stream testbench，驗 TLAST + output 正確）
+- [x] RTL Synthesis PASS（確認 II=1，LUT/DSP 用量合理）
+- [x] 確認 synthesis report 中 static state 保留
+- [x] Export IP
+- [x] **BUG FIX：output packet `.keep = ~0`（TKEEP=0 導致 S2MM 寫入 DDR 失敗，見 §10）**
 
 ### Step B — Vivado Block Design
-- [ ] 加入 AXI DMA IP（MM2S + S2MM，開 interrupt）
-- [ ] 加入 2 × AXI Stream FIFO（depth ≥ 512）
-- [ ] 加入 Concat IP，接 IRQ_F2P[0]
-- [ ] Effect IP Refresh IP
-- [ ] Address Editor 確認，填入 `INTERFACE.md`
-- [ ] Generate Bitstream
+- [x] 加入 AXI DMA IP（MM2S + S2MM，c_include_sg=0）
+- [x] 加入 2 × AXI Stream FIFO（axis_data_fifo_0 / _1，depth=512）
+- [x] 加入 Concat IP，接 IRQ_F2P[0]
+- [x] HP0 data width 改為 32-bit（與 DMA M_AXI 寬度一致）
+- [x] axi_mem_intercon NUM_SI=2（MM2S + S2MM，無 SG port）
+- [x] Address Editor 確認（DMA=0x41E00000，Effect=0x40020000）
+- [ ] **重新 Generate Bitstream（含 TKEEP fix 的新 process_sample IP）**
 
 ### Step C — PS C 程式
-- [ ] 確認板上 `libcma.so` 存在：`ls -la /usr/lib/libcma.so /usr/include/libxlnk_cma.h`
-- [ ] 實作 `audio_dma.c`（fill → `cma_flush_cache` → DMA start → fill next → DMA wait → `cma_invalidate_cache` → drain）
-- [ ] 板上編譯：`gcc -O2 audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -o audio_dma`
-- [ ] 單次 DMA transfer 測試（不 ping-pong，只跑一次 send + recv，驗輸出正確）
-- [ ] Ping-pong 迴圈測試（連續跑 5 秒，用示波器或錄音確認無 glitch）
+- [x] 確認板上 `libcma.so` 存在
+- [x] 實作 `audio_dma.c`（Combined TX/RX codec loop + DMA ping-pong，non-cacheable buffer）
+- [x] 板上編譯：`gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -O2 -o audio_dma`
+- [x] 加入完整診斷（phys-verify、effect readback、DMA SR、/dev/mem cross-check）
+- [ ] **驗證 TKEEP fix 後 out_buf 正確寫入（期望看到 codec 音訊值）**
+- [ ] Ping-pong 連續音訊迴圈測試（確認無 glitch）
 
 ### Step D — 上板整合驗證
-- [ ] 接 JB62 + amp，啟動 `audio_dma`
-- [ ] 確認 distortion 效果正常
+- [ ] 確認 passthrough 音訊正常（dist_en=0）
+- [ ] 確認 distortion 效果正常（dist_en=1，threshold/gain 調整）
 - [ ] 確認無 click / glitch（IIR state 跨 buffer 正常）
 - [ ] 與 Phase 2 Python PIO 聽感比較，確認音質改善
 - [ ] **Phase 6 Exit Criteria 確認**

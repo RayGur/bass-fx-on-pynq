@@ -135,18 +135,27 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | `s_out` | IP→DMA | `hls::stream<ap_axis<32,0,0,0>>` | 音訊輸出 stream，L/R 交錯 |
 
 **資料格式**：每個 32-bit word 的低 24 bits 為 Q1.23 sample，高 8 bits 為 0。L/R 交錯，共 `n_samples × 2` words per transfer。  
-**TLAST**：stream 最後一個 word（index = n_samples×2−1）必須設 `.last=1`（見 D21）。
+**TLAST**：stream 最後一個 word（index = n_samples×2−1）必須設 `.last=1`（見 D21）。  
+**TKEEP（重要）**：每個輸出 packet 必須顯式設 `.keep = ~0`（32-bit stream → `0xF`，4 bits 全 1）。若不設，HLS 合成後 `.keep` 預設為 0 → TKEEP=0 → AXI DMA DataMover 將 WSTRB 設為 0 → HP0 接受交易但不寫 DDR → `out_buf` 永遠不更新（見 D23）。
 
-### AXI DMA — Phase 6 🔲
+### AXI DMA — Phase 6 ✅（BD 確認，2026-06-12）
 
 | 項目 | 值 |
 |------|----|
-| IP 實例 | `axi_dma_0`（待 BD 建立後確認） |
-| base address | TBD（Vivado Address Editor） |
-| MM2S（PS→PL）| `sendchannel`：傳 input buffer 給 Effect IP |
-| S2MM（PL→PS）| `recvchannel`：從 Effect IP 收 output buffer |
-| 中斷 | 兩個 channel IRQ → Concat → `IRQ_F2P[0]` |
-| Buffer size | 256 samples × 2 ch × 4 bytes = 2048 bytes/transfer（D19） |
+| IP 實例 | `axi_dma_0` |
+| base address | **`0x41E0_0000`** |
+| MM2S（PS→PL）| DMA_CR offset `0x00`，DMA_SR `0x04`，SRC_ADDR `0x18`，LENGTH `0x28` |
+| S2MM（PL→PS）| DMA_CR offset `0x30`，DMA_SR `0x34`，DST_ADDR `0x48`，LENGTH `0x58` |
+| 中斷 | mm2s_introut + s2mm_introut → xlconcat_0 → `IRQ_F2P[0]` ✅ |
+| Buffer size | 256 samples × 2 ch × 4 bytes = 2048 bytes/transfer |
+| 模式 | Direct Register Mode（無 SG）|
+
+### audio_codec_ctrl — Phase 6
+
+| 項目 | 值 |
+|------|----|
+| IP 實例 | `audio_codec_ctrl_0` |
+| base address | **`0x44A0_0000`** |
 
 ### AXI GPIO
 
@@ -216,3 +225,4 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 2 | distortion 參數編碼定案：threshold 為 Q1.23 int，gain 為純整數 1–20；中間運算型別定案：`ap_fixed<32,6>`（Q6.26） |
 | Phase 6 | 資料 port（in_l/in_r/out_l/out_r/state）標記為 Phase 6 移除；新增 AXI-Stream 介面規格；新增 AXI DMA 欄位（base address TBD）；parameter offsets TBD 待 re-synthesis |
 | Phase 6 RTL | Effect IP Phase 6 AXI-Lite parameter offsets 確認（n_samples=0x10, dist_en=0x18, wobble_en=0x20, threshold=0x28, gain=0x30, lfo_rate=0x38, lfo_depth=0x40）；II=2（可接受）；IP base address 待 Vivado BD |
+| Phase 6 BUG | AXI-Stream 輸出 packet 必須顯式設 `.keep = ~0`；TKEEP=0 → WSTRB=0 → HP0 不寫 DDR（見 D23）；已修入 `process_sample.cpp` |
