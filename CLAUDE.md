@@ -79,7 +79,7 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 ## 版本控制
 
 - Repo:https://github.com/RayGur/bass-fx-on-pynq.git
-- 功能開新 branch,完成一小塊就 commit。
+- 功能開新 branch,完成一小塊就 commit，add之前先確認branch。
 - merge 開 PR,push 前告訴 Ray。
 - **進 Git**:HLS C source、tcl、PS 程式、docs。
 - **不進 Git**:`.bit` / `.hwh` 等 binary(另行共享;`.bit` 與 `.hwh` 須同名成對)。

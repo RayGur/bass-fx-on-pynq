@@ -324,20 +324,31 @@
 
 ---
 
-## D22. Phase 6 PS 端 CMA buffer 分配與 cache 管理：待討論
+## D22. Phase 6 PS 端 CMA buffer 分配與 cache 管理：`libcma.so` ✅
 
 - **背景**：C + DMA 架構下，PS C 程式需要（1）分配 DMA-safe（physically contiguous）buffer，（2）在 DMA 傳輸前後做 cache flush / invalidate（HP port 無 hardware coherency，見 D21）。Python 透過 `pynq.allocate()` 解決，但 C 程式不能直接呼叫 Python API。
+- **決定**：使用板上已有的 **`libcma.so`**（xlnk 的 C userspace wrapper）。
 - **調查結論**：
-  - **udmabuf**（https://github.com/ikwzm/udmabuf）：Linux kernel module，提供 `/dev/udmabuf0` 字元裝置，C 程式透過 `mmap` + `ioctl` 分配 CMA buffer 並做 cache sync。架構最乾淨，C 可獨立完成所有操作。
-    - 問題：PYNQ 4.19 kernel 為 cross-compiled，`scripts/mod/modpost` binary 不在板上（是 x86 binary，ARM 無法執行），導致無法在板上直接 `make modules` 編譯 udmabuf.ko。
-    - 錯誤訊息：`/bin/sh: 1: scripts/mod/modpost: not found`
-    - 嘗試從 source 手動編譯 modpost 失敗（kernel header 與 glibc header 衝突）。
-  - **xlnk**（`/dev/xlnk`）：PYNQ 自帶，built-in kernel driver，提供 ioctl 分配 CMA + cache flush/invalidate。已確認 `/dev/xlnk` 存在於板上。**但 xlnk 已被 XRT 取代**，長期可靠性存疑。
-  - **ACP port**：hardware coherent，不需 software cache management，但 Vivado BD 需額外設定 AxCACHE 訊號（接 Constant IP = `0b0011`）。
-- **待討論**：udmabuf 的 cross-compilation 可行性（WSL + ARM cross-compiler）、或改用 ACP port、或研究 XRT 的 C 介面。
+  - **XRT**：**不支援 PYNQ-Z2（Zynq-7000）**。XRT 的 Zynq 支援指 ZynqMP（UltraScale+, Cortex-A53），與 Zynq-7000（Cortex-A9）無關。官方 maintainer Cathal McCabe 明確確認（https://discuss.pynq.io/t/xrt-on-pynq-z2/2950）。「xlnk 被 XRT 取代」在 Z2 上**不適用**。
+  - **xlnk / libcma.so**：xlnk kernel driver 在 PYNQ 2.5 仍然存在且可用（Python 層面 deprecated，但 kernel driver 未移除）。Xilinx 提供 `libcma.so` 作為 C userspace wrapper，**已預裝於 PYNQ 2.5**（`/usr/lib/libcma.so`、`/usr/include/libxlnk_cma.h`）。在 Cortex-A9 上，`cma_flush_cache` / `cma_invalidate_cache` 底層呼叫 xlnk kernel driver 的 `xlnkFlushCache` / `xlnkInvalidateCache`，提供完整 cache coherency。PYNQ 2.5 + PYNQ-Z2 上社群確認可用（需 sudo）。
+  - **udmabuf**：需 cross-compile（板上缺 `modpost` binary，`/bin/sh: scripts/mod/modpost: not found`），沒有 `4.19.0-xilinx-v2019.1` 的預編譯 `.ko`，且 `libcma.so` 已提供等效功能，**不值得繼續追**。
+  - **ACP port**：hardware coherent，不需 software cache ops，但需 Vivado BD 額外設定 AxCACHE（接 Constant IP = `0b0011`），改動量較大，保留為備選。
+- **C API**（編譯：`gcc ... -I/usr/include -L/usr/lib -lcma -lpthread`，需 sudo）：
+  ```c
+  #include <libxlnk_cma.h>
+  void     *buf  = cma_alloc(2048, 1);           // 分配 CMA buffer（cacheable）
+  uint32_t  phys = cma_get_phy_addr(buf);        // 取實體位址（給 DMA 暫存器用）
+  cma_flush_cache(buf, phys, 2048);              // DMA TX 前：PS→PL flush
+  cma_invalidate_cache(buf, phys, 2048);         // DMA RX 後：PL→PS invalidate
+  cma_free(buf);
+  ```
+- **待確認（板上）**：`ls -la /usr/lib/libcma.so /usr/include/libxlnk_cma.h`
 - **參考**：
-  - udmabuf repo：https://github.com/ikwzm/udmabuf
-  - modpost cross-compilation issue：PYNQ kernel 4.19.0-xilinx-v2019.1
+  - libxlnk_cma.h：https://github.com/Xilinx/PYNQ/blob/master/sdbuild/packages/libsds/libcma/libxlnk_cma.h
+  - pynqlib.c（flush/invalidate 實作）：https://github.com/Xilinx/PYNQ/blob/master/sdbuild/packages/libsds/libcma/pynqlib.c
+  - XRT on PYNQ-Z2（maintainer 確認不支援）：https://discuss.pynq.io/t/xrt-on-pynq-z2/2950
+  - libcma.so in C++ on PYNQ-Z2（社群確認）：https://discuss.pynq.io/t/a-problem-on-libcma-so-in-c/959
+  - udmabuf modpost 問題：https://github.com/ikwzm/udmabuf/issues/19
 
 ---
 
@@ -349,4 +360,3 @@
 - wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。
 - Phase 6 DMA base address（Vivado Address Editor 重新 build 後確認）。
 - Phase 6 HLS 合成後 AXI-Lite parameter offsets 是否有變（重新 synthesis 後確認 `xprocess_sample_hw.h`）。
-- **D22 待討論**：PS C 程式的 CMA buffer 分配與 cache 管理方案（udmabuf cross-compile / ACP port / XRT）。

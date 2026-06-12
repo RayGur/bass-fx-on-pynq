@@ -251,35 +251,48 @@ axi_dma_0 s2mm_introut ↗
 
 ## 6. Step 4 — PS C 程式（`audio_dma.c`）
 
-> ⚠️ **已知未解問題（D22，待討論）**：C 程式需要分配 DMA-safe buffer 並做 cache flush/invalidate（HP port 無 HW coherency）。調查過的方案：
-> - **udmabuf**：架構最乾淨，但 PYNQ cross-compiled kernel 缺 `modpost` binary，板上無法直接 `make modules`。
-> - **xlnk**（`/dev/xlnk`）：已在板上存在，但已被 XRT 取代，長期可靠性待確認。
-> - **ACP port**：HW coherent，不需 software cache op，但需 Vivado BD 額外設定。
->
-> 以下程式骨架以 udmabuf 為假設前提，**buffer 分配與 cache 操作部分標記 TODO，待 D22 定案後補齊**。
+buffer 分配與 cache 管理方案已定案（D22）：使用板上預裝的 **`libcma.so`**（xlnk userspace wrapper）。  
+編譯：`gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o audio_dma`（需 sudo 執行）
+
+> **板上確認**（執行前先驗）：`ls -la /usr/lib/libcma.so /usr/include/libxlnk_cma.h`
 
 ### 6.1 整體結構
 
 ```c
-// audio_dma.c — Phase 6 C PIO + DMA 音訊搬運
+// audio_dma.c — Phase 6 C + DMA 音訊搬運
 #include <stdint.h>
 #include <stdlib.h>
-// PYNQ 平台 UIO/mmap 存取（或直接用 /dev/mem）
+#include <libxlnk_cma.h>   // cma_alloc / cma_flush_cache / cma_invalidate_cache
 
-#define N_SAMPLES     256         // per buffer (D19)
-#define N_WORDS       (N_SAMPLES * 2)  // L/R interleaved
+#define N_SAMPLES     256
+#define N_WORDS       (N_SAMPLES * 2)   // L/R interleaved
+#define BUF_BYTES     (N_WORDS * 4)     // 2048 bytes
 
-// 兩組 ping-pong buffer（各 2048 bytes）
-// 在板上用 mmap /dev/mem 或 PYNQ CMA 分配
-int32_t *in_buf[2];   // DMA input (PS fills from codec)
-int32_t *out_buf[2];  // DMA output (PS writes to codec)
+// ping-pong buffer（CMA，physically contiguous）
+int32_t  *in_buf[2],  *out_buf[2];
+uint32_t  in_phys[2],  out_phys[2];
+
+void init_buffers() {
+    for (int i = 0; i < 2; i++) {
+        in_buf[i]   = cma_alloc(BUF_BYTES, 1);   // cacheable=1
+        out_buf[i]  = cma_alloc(BUF_BYTES, 1);
+        in_phys[i]  = cma_get_phy_addr(in_buf[i]);
+        out_phys[i] = cma_get_phy_addr(out_buf[i]);
+    }
+}
+
+void free_buffers() {
+    for (int i = 0; i < 2; i++) {
+        cma_free(in_buf[i]);
+        cma_free(out_buf[i]);
+    }
+}
 
 void fill_input_buf(int32_t *buf) {
-    // 從 audio_codec_ctrl 讀 N_SAMPLES 個 stereo pair
     for (int i = 0; i < N_SAMPLES; i++) {
         while (!(mmio_read(I2S_STATUS_REG) & RX_VALID));
-        buf[i*2]   = mmio_read(I2S_DATA_RX_L_REG);  // L
-        buf[i*2+1] = mmio_read(I2S_DATA_RX_R_REG);  // R
+        buf[i*2]   = mmio_read(I2S_DATA_RX_L_REG);
+        buf[i*2+1] = mmio_read(I2S_DATA_RX_R_REG);
     }
 }
 
@@ -300,22 +313,21 @@ void audio_loop() {
     while (1) {
         int nxt = 1 - cur;
 
-        // 1. Flush：確保 PS 寫完的 data 已推出 cache → DRAM（D21 陷阱 2）
-        cache_flush(in_buf[cur], N_WORDS * 4);
+        // 1. Flush：PS cache → DRAM，確保 DMA 讀到最新資料（D21）
+        cma_flush_cache(in_buf[cur], in_phys[cur], BUF_BYTES);
 
         // 2. 啟動 DMA（non-blocking）
-        dma_start_send(in_buf[cur], N_WORDS * 4);
-        dma_start_recv(out_buf[cur], N_WORDS * 4);
+        dma_start_send(in_phys[cur], BUF_BYTES);
+        dma_start_recv(out_phys[cur], BUF_BYTES);
 
-        // 3. 同時：PS 填下一個 input buffer（並行！）
+        // 3. PS 填下一個 input buffer（與 DMA 並行）
         fill_input_buf(in_buf[nxt]);
 
-        // 4. 等 DMA 完成（中斷或 polling）
-        dma_wait_send();
-        dma_wait_recv();
+        // 4. 等 DMA 完成（polling DMA status reg 或 IRQ）
+        dma_wait();
 
-        // 5. Invalidate：讓 PS cache 看到 DMA 寫入的新資料（D21 陷阱 2）
-        cache_invalidate(out_buf[cur], N_WORDS * 4);
+        // 5. Invalidate：清除 PS cache stale 內容，確保讀到 DMA 寫入的新資料（D21）
+        cma_invalidate_cache(out_buf[cur], out_phys[cur], BUF_BYTES);
 
         // 6. 寫回 codec
         drain_output_buf(out_buf[cur]);
@@ -372,8 +384,9 @@ effect.write(ADDR_GAIN,      8)
 - [ ] Generate Bitstream
 
 ### Step C — PS C 程式
-- [ ] 實作 `audio_dma.c`（fill → flush → DMA start → fill next → DMA wait → invalidate → drain）
-- [ ] 板上編譯：`gcc -O2 -o audio_dma audio_dma.c -lpthread`
+- [ ] 確認板上 `libcma.so` 存在：`ls -la /usr/lib/libcma.so /usr/include/libxlnk_cma.h`
+- [ ] 實作 `audio_dma.c`（fill → `cma_flush_cache` → DMA start → fill next → DMA wait → `cma_invalidate_cache` → drain）
+- [ ] 板上編譯：`gcc -O2 audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -o audio_dma`
 - [ ] 單次 DMA transfer 測試（不 ping-pong，只跑一次 send + recv，驗輸出正確）
 - [ ] Ping-pong 迴圈測試（連續跑 5 秒，用示波器或錄音確認無 glitch）
 
@@ -399,3 +412,7 @@ effect.write(ADDR_GAIN,      8)
 | cathalmccabe PYNQ DMA Tutorial | https://github.com/cathalmccabe/PYNQ_tutorials |
 | PYNQ Workshop Session 4 DMA Notebook | https://github.com/Xilinx/PYNQ_Workshop/blob/master/Session_4/6_dma_tutorial.ipynb |
 | Ping-pong buffer 說明 | https://audiodsplab.wordpress.com/ping-pong-buffer-audio-stream/ |
+| PYNQ libxlnk_cma.h（C API）| https://github.com/Xilinx/PYNQ/blob/master/sdbuild/packages/libsds/libcma/libxlnk_cma.h |
+| PYNQ pynqlib.c（flush/invalidate 實作）| https://github.com/Xilinx/PYNQ/blob/master/sdbuild/packages/libsds/libcma/pynqlib.c |
+| XRT on PYNQ-Z2（maintainer 確認不支援）| https://discuss.pynq.io/t/xrt-on-pynq-z2/2950 |
+| libcma.so in C on PYNQ-Z2（社群確認）| https://discuss.pynq.io/t/a-problem-on-libcma-so-in-c/959 |
