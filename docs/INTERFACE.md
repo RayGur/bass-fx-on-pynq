@@ -106,21 +106,24 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 | `lfo_depth` | PS→PL | `0x68` | wobble 掃動範圍（32-bit int） |
 | `state` | PS→PL | `0x70` | 跨 sample 狀態（Phase 1 placeholder）**[Phase 6 移除，改 HLS static]** |
 
-### Effect IP — Phase 6 DMA 版本 🔲（re-synthesis 後確認）
+### Effect IP — Phase 6 DMA 版本 ✅（RTL Synthesis 確認，2026-06-12）
 
-> **⚠️ Phase 6 後 IP 介面改變，AXI-Stream 取代資料 port，須重新合成。**  
-> **下表 parameter offset 為 Phase 5 值；Phase 6 synthesis 完成後以 `xprocess_sample_hw.h` 更新。**
+> **IP base address：TBD（Vivado Block Design 建立後由 Address Editor 確認）**  
+> **Parameter offsets 已由 RTL Synthesis 產出的 `csynth.rpt` 確認。**
 
 | 參數 | 方向 | byte offset | 說明 |
 |------|------|-------------|------|
-| ap_ctrl | R/W | `0x00` | 同前 |
-| `n_samples` | PS→PL | TBD | 每次 DMA 處理的 sample 數（兩聲道共 n_samples pairs） |
-| `dist_en` | PS→PL | TBD | distortion 開關，bit0 |
-| `wobble_en` | PS→PL | TBD | wobble 開關，bit0 |
-| `threshold` | PS→PL | TBD | 同前 |
-| `gain` | PS→PL | TBD | 同前 |
-| `lfo_rate` | PS→PL | TBD | 同前 |
-| `lfo_depth` | PS→PL | TBD | 同前 |
+| ap_ctrl（CTRL） | R/W | `0x00` | bit0=AP_START, bit1=AP_DONE, bit2=AP_IDLE, bit7=AUTO_RESTART |
+| GIER | R/W | `0x04` | Global Interrupt Enable, bit0=Enable |
+| IP_IER | R/W | `0x08` | Interrupt Enable, bit0=CHAN0, bit1=CHAN1 |
+| IP_ISR | R/W | `0x0c` | Interrupt Status, bit0=CHAN0, bit1=CHAN1 |
+| `n_samples` | PS→PL | `0x10` | 每次 DMA 傳輸的 stereo pair 數（通常 256） |
+| `dist_en` | PS→PL | `0x18` | distortion 開關，bit0 |
+| `wobble_en` | PS→PL | `0x20` | wobble 開關，bit0 |
+| `threshold` | PS→PL | `0x28` | distortion clip 點，Q1.23 int；PS 寫 `int(clip_float * (1<<23))` |
+| `gain` | PS→PL | `0x30` | distortion 輸入增益，純整數 1–20 |
+| `lfo_rate` | PS→PL | `0x38` | wobble 掃動速率（32-bit int） |
+| `lfo_depth` | PS→PL | `0x40` | wobble 掃動範圍（32-bit int） |
 
 ### Effect IP — Phase 6 AXI-Stream 介面 🔲
 
@@ -212,3 +215,4 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 1 | AXI-Lite offset 定案（from HLS xprocess_sample_hw.h）；AXI GPIO base address 定案；AXI IIC base address 定案（`0x40800000`）；PYNQ 2.5 DT 限制與 AxiIIC 存取方式補充 |
 | Phase 2 | distortion 參數編碼定案：threshold 為 Q1.23 int，gain 為純整數 1–20；中間運算型別定案：`ap_fixed<32,6>`（Q6.26） |
 | Phase 6 | 資料 port（in_l/in_r/out_l/out_r/state）標記為 Phase 6 移除；新增 AXI-Stream 介面規格；新增 AXI DMA 欄位（base address TBD）；parameter offsets TBD 待 re-synthesis |
+| Phase 6 RTL | Effect IP Phase 6 AXI-Lite parameter offsets 確認（n_samples=0x10, dist_en=0x18, wobble_en=0x20, threshold=0x28, gain=0x30, lfo_rate=0x38, lfo_depth=0x40）；II=2（可接受）；IP base address 待 Vivado BD |
