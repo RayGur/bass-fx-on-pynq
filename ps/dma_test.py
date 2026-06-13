@@ -64,9 +64,21 @@ while not (dma.read(DMA_S2MM_SR) & IOC):
     if time.time() - t0 > 5:
         print("S2MM TIMEOUT")
         break
-print(f"S2MM SR={hex(dma.read(DMA_S2MM_SR))}  LEN_rem={dma.read(DMA_S2MM_LEN)}")
+s2mm_sr = dma.read(DMA_S2MM_SR)
+print(f"S2MM SR={hex(s2mm_sr)}  LEN_rem={dma.read(DMA_S2MM_LEN)}")
+print(f"  halted={s2mm_sr&1} idle={(s2mm_sr>>1)&1} int_err={(s2mm_sr>>4)&1} slv_err={(s2mm_sr>>5)&1} dec_err={(s2mm_sr>>6)&1} ioc={(s2mm_sr>>12)&1}")
 dma.write(DMA_S2MM_SR, IOC)
 
 out_buf.invalidate()
-print(f"in_buf [:4] = {list(in_buf[:4])}")
-print(f"out_buf[:4] = {list(out_buf[:4])}")
+print(f"in_buf [:8] = {list(in_buf[:8])}")
+print(f"out_buf[:8] = {list(out_buf[:8])}")
+
+# Check alternating pattern
+sentinel = int(np.int32(-0x55555556))  # 0xAAAAAAAA
+ok_even  = all(int(out_buf[i]) == int(in_buf[i]) & 0xFFFFFF for i in range(0, N*2, 2))
+all_odd_sentinel = all(int(out_buf[i]) == sentinel           for i in range(1, N*2, 2))
+print(f"even positions match input (L-ch): {ok_even}")
+print(f"odd  positions all sentinel  (R-ch): {all_odd_sentinel}")
+num_written  = sum(1 for i in range(N*2) if int(out_buf[i]) != sentinel)
+num_sentinel = sum(1 for i in range(N*2) if int(out_buf[i]) == sentinel)
+print(f"total written={num_written}  sentinel={num_sentinel}  (expected written={N*2})")

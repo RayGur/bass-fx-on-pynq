@@ -25,78 +25,86 @@
 #include <libxlnk_cma.h>
 
 // ── Base addresses ────────────────────────────────────────────
-#define CODEC_BASE    0x44A00000UL
-#define DMA_BASE      0x41E00000UL
-#define EFFECT_BASE   0x40020000UL
-#define MAP_SIZE      0x10000UL
+#define CODEC_BASE 0x44A00000UL
+#define DMA_BASE 0x41E00000UL
+#define EFFECT_BASE 0x40020000UL
+#define MAP_SIZE 0x10000UL
 
 // ── audio_codec_ctrl registers (offset from CODEC_BASE) ──────
-#define CODEC_RX_L    0x00   // R: left  received sample, bits[23:0] = Q1.23
-#define CODEC_RX_R    0x04   // R: right received sample
-#define CODEC_TX_L    0x08   // W: left  transmit sample
-#define CODEC_TX_R    0x0C   // W: right transmit sample
-#define CODEC_STATUS  0x10   // RW: bit0=data_rdy; write any value to clear
+#define CODEC_RX_L 0x00   // R: left  received sample, bits[23:0] = Q1.23
+#define CODEC_RX_R 0x04   // R: right received sample
+#define CODEC_TX_L 0x08   // W: left  transmit sample
+#define CODEC_TX_R 0x0C   // W: right transmit sample
+#define CODEC_STATUS 0x10 // RW: bit0=data_rdy; write any value to clear
 
 // ── AXI DMA Direct Register Mode offsets ─────────────────────
-#define DMA_MM2S_CR   0x00   // MM2S Control
-#define DMA_MM2S_SR   0x04   // MM2S Status
-#define DMA_MM2S_SA   0x18   // MM2S Source Address
-#define DMA_MM2S_LEN  0x28   // MM2S Transfer Length (bytes)
-#define DMA_S2MM_CR   0x30   // S2MM Control
-#define DMA_S2MM_SR   0x34   // S2MM Status
-#define DMA_S2MM_DA   0x48   // S2MM Destination Address
-#define DMA_S2MM_LEN  0x58   // S2MM Transfer Length (bytes)
-#define DMA_CR_RS     (1 << 0)    // Run/Stop
-#define DMA_SR_IOC    (1 << 12)   // IOC_Irq: transfer complete
+#define DMA_MM2S_CR 0x00     // MM2S Control
+#define DMA_MM2S_SR 0x04     // MM2S Status
+#define DMA_MM2S_SA 0x18     // MM2S Source Address
+#define DMA_MM2S_LEN 0x28    // MM2S Transfer Length (bytes)
+#define DMA_S2MM_CR 0x30     // S2MM Control
+#define DMA_S2MM_SR 0x34     // S2MM Status
+#define DMA_S2MM_DA 0x48     // S2MM Destination Address
+#define DMA_S2MM_LEN 0x58    // S2MM Transfer Length (bytes)
+#define DMA_CR_RS (1 << 0)   // Run/Stop
+#define DMA_SR_IOC (1 << 12) // IOC_Irq: transfer complete
 
 // ── Effect IP (process_sample) AXI-Lite offsets ──────────────
-#define EFFECT_CTRL       0x00   // bit0=AP_START, bit7=AUTO_RESTART
-#define EFFECT_N_SAMPLES  0x10
-#define EFFECT_DIST_EN    0x18
-#define EFFECT_WOBBLE_EN  0x20
-#define EFFECT_THRESHOLD  0x28   // Q1.23 int: int(clip_float * (1<<23))
-#define EFFECT_GAIN       0x30   // integer 1–20
+#define EFFECT_CTRL 0x00 // bit0=AP_START, bit7=AUTO_RESTART
+#define EFFECT_N_SAMPLES 0x10
+#define EFFECT_DIST_EN 0x18
+#define EFFECT_WOBBLE_EN 0x20
+#define EFFECT_THRESHOLD 0x28 // Q1.23 int: int(clip_float * (1<<23))
+#define EFFECT_GAIN 0x30      // integer 1–20
 
 // ── Default effect parameters (adjust via Python after boot) ─
-#define DEFAULT_DIST_EN    0
-#define DEFAULT_THRESHOLD  ((int)(0.3f * (1 << 23)))   // 0.3 full scale
-#define DEFAULT_GAIN       8
+#define DEFAULT_DIST_EN 0
+#define DEFAULT_THRESHOLD ((int)(0.3f * (1 << 23))) // 0.3 full scale
+#define DEFAULT_GAIN 8
 
 // ── Buffer config (non-cacheable = cache coherent with DMA) ──
-#define N_SAMPLES    256
-#define N_WORDS      (N_SAMPLES * 2)    // L then R, interleaved
-#define BUF_BYTES    (N_WORDS * 4)      // 2048 bytes per buffer
+#define N_SAMPLES 255
+#define N_WORDS (N_SAMPLES * 2) // L then R, interleaved
+#define BUF_BYTES (N_WORDS * 4) // 2048 bytes per buffer
 
 // ── Globals ───────────────────────────────────────────────────
 static volatile uint32_t *codec;
 static volatile uint32_t *dma;
 static volatile uint32_t *effect;
 
-static int32_t  *in_buf[2],  *out_buf[2];
-static uint32_t  in_phys[2],  out_phys[2];
+static int32_t *in_buf[2], *out_buf[2];
+static uint32_t in_phys[2], out_phys[2];
 
 // ── MMIO helpers ──────────────────────────────────────────────
-#define REG_R(base, off)          ((base)[(off) / 4])
-#define REG_W(base, off, val)     ((base)[(off) / 4] = (uint32_t)(val))
+#define REG_R(base, off) ((base)[(off) / 4])
+#define REG_W(base, off, val) ((base)[(off) / 4] = (uint32_t)(val))
 
 // ── mmap a peripheral ─────────────────────────────────────────
-static volatile uint32_t *mmap_periph(int fd, uint32_t base_addr) {
+static volatile uint32_t *mmap_periph(int fd, uint32_t base_addr)
+{
     void *p = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE,
                    MAP_SHARED, fd, (off_t)base_addr);
-    if (p == MAP_FAILED) { perror("mmap"); exit(1); }
+    if (p == MAP_FAILED)
+    {
+        perror("mmap");
+        exit(1);
+    }
     return (volatile uint32_t *)p;
 }
 
 // ── CMA buffer allocation ─────────────────────────────────────
-static void init_buffers(void) {
-    for (int i = 0; i < 2; i++) {
-        in_buf[i]  = cma_alloc(BUF_BYTES, 0);   // cacheable=0: no flush/invalidate needed
+static void init_buffers(void)
+{
+    for (int i = 0; i < 2; i++)
+    {
+        in_buf[i] = cma_alloc(BUF_BYTES, 0); // cacheable=0: no flush/invalidate needed
         out_buf[i] = cma_alloc(BUF_BYTES, 0);
-        if (!in_buf[i] || !out_buf[i]) {
+        if (!in_buf[i] || !out_buf[i])
+        {
             fprintf(stderr, "cma_alloc failed\n");
             exit(1);
         }
-        in_phys[i]  = cma_get_phy_addr(in_buf[i]);
+        in_phys[i] = cma_get_phy_addr(in_buf[i]);
         out_phys[i] = cma_get_phy_addr(out_buf[i]);
         printf("[init] buf[%d]: in_phys=0x%08x  out_phys=0x%08x\n",
                i, in_phys[i], out_phys[i]);
@@ -104,7 +112,8 @@ static void init_buffers(void) {
 }
 
 // ── Diagnostics ───────────────────────────────────────────────
-static void diag(const char *tag) {
+static void diag(const char *tag)
+{
     uint32_t mm2s_sr = REG_R(dma, DMA_MM2S_SR);
     uint32_t s2mm_sr = REG_R(dma, DMA_S2MM_SR);
     uint32_t eff_ctrl = REG_R(effect, EFFECT_CTRL);
@@ -117,23 +126,25 @@ static void diag(const char *tag) {
     printf("  EFFECT_CTRL=0x%08x  n_samples=%u\n", eff_ctrl, eff_nsamp);
 }
 
-static void diag_buf(const char *tag, int32_t *buf) {
+static void diag_buf(const char *tag, int32_t *buf)
+{
     printf("[diag:%s] buf[0..3] = %d %d %d %d\n",
            tag, buf[0], buf[1], buf[2], buf[3]);
 }
 
 // ── Effect IP init ────────────────────────────────────────────
-static void effect_init(void) {
+static void effect_init(void)
+{
     REG_W(effect, EFFECT_N_SAMPLES, N_SAMPLES);
-    REG_W(effect, EFFECT_DIST_EN,   DEFAULT_DIST_EN);
+    REG_W(effect, EFFECT_DIST_EN, DEFAULT_DIST_EN);
     REG_W(effect, EFFECT_WOBBLE_EN, 0);
     REG_W(effect, EFFECT_THRESHOLD, DEFAULT_THRESHOLD);
-    REG_W(effect, EFFECT_GAIN,      DEFAULT_GAIN);
+    REG_W(effect, EFFECT_GAIN, DEFAULT_GAIN);
     // AP_START | AUTO_RESTART: IP restarts after each stream transfer
     REG_W(effect, EFFECT_CTRL, (1 << 7) | (1 << 0));
 
     // Readback: confirm AXI-Lite writes reached the IP
-    uint32_t rb_n   = REG_R(effect, EFFECT_N_SAMPLES);
+    uint32_t rb_n = REG_R(effect, EFFECT_N_SAMPLES);
     uint32_t rb_dis = REG_R(effect, EFFECT_DIST_EN);
     uint32_t rb_ctl = REG_R(effect, EFFECT_CTRL);
     printf("[init] effect IP: dist_en=%d threshold=0x%x gain=%d\n",
@@ -148,11 +159,14 @@ static void effect_init(void) {
 
 // ── DMA init (hard reset + run both channels) ────────────────
 // PYNQ overlay may leave DMA in SG-running state; reset first.
-static void dma_init(void) {
-    REG_W(dma, DMA_MM2S_CR, 1 << 2);   // MM2S reset
-    REG_W(dma, DMA_S2MM_CR, 1 << 2);   // S2MM reset
-    while (REG_R(dma, DMA_MM2S_CR) & (1 << 2));   // wait auto-clear
-    while (REG_R(dma, DMA_S2MM_CR) & (1 << 2));
+static void dma_init(void)
+{
+    REG_W(dma, DMA_MM2S_CR, 1 << 2); // MM2S reset
+    REG_W(dma, DMA_S2MM_CR, 1 << 2); // S2MM reset
+    while (REG_R(dma, DMA_MM2S_CR) & (1 << 2))
+        ; // wait auto-clear
+    while (REG_R(dma, DMA_S2MM_CR) & (1 << 2))
+        ;
     REG_W(dma, DMA_MM2S_CR, DMA_CR_RS);
     REG_W(dma, DMA_S2MM_CR, DMA_CR_RS);
     printf("[dma_init] post-reset: MM2S_SR=0x%08x  S2MM_SR=0x%08x\n",
@@ -162,26 +176,33 @@ static void dma_init(void) {
 // ── Single DMA transfer (blocking) ───────────────────────────
 // S2MM first so receiver is ready before sender fires.
 static int dma_first = 1;
-static void dma_transfer(uint32_t src_phys, uint32_t dst_phys) {
-    REG_W(dma, DMA_S2MM_DA,  dst_phys);
-    if (dma_first) printf("[dma] S2MM_DA written=0x%08x readback=0x%08x\n",
-                          dst_phys, REG_R(dma, DMA_S2MM_DA));
-    REG_W(dma, DMA_S2MM_LEN, BUF_BYTES);    // triggers S2MM
+static void dma_transfer(uint32_t src_phys, uint32_t dst_phys)
+{
+    REG_W(dma, DMA_S2MM_DA, dst_phys);
+    if (dma_first)
+        printf("[dma] S2MM_DA written=0x%08x readback=0x%08x\n",
+               dst_phys, REG_R(dma, DMA_S2MM_DA));
+    REG_W(dma, DMA_S2MM_LEN, BUF_BYTES); // triggers S2MM
 
-    REG_W(dma, DMA_MM2S_SA,  src_phys);
-    if (dma_first) printf("[dma] MM2S_SA written=0x%08x readback=0x%08x\n",
-                          src_phys, REG_R(dma, DMA_MM2S_SA));
-    REG_W(dma, DMA_MM2S_LEN, BUF_BYTES);    // triggers MM2S
+    REG_W(dma, DMA_MM2S_SA, src_phys);
+    if (dma_first)
+        printf("[dma] MM2S_SA written=0x%08x readback=0x%08x\n",
+               src_phys, REG_R(dma, DMA_MM2S_SA));
+    REG_W(dma, DMA_MM2S_LEN, BUF_BYTES); // triggers MM2S
 
     uint32_t mm2s_sr, s2mm_sr;
-    while (!((mm2s_sr = REG_R(dma, DMA_MM2S_SR)) & DMA_SR_IOC));
-    if (dma_first) printf("[dma] MM2S IOC: SR=0x%08x\n", mm2s_sr);
+    while (!((mm2s_sr = REG_R(dma, DMA_MM2S_SR)) & DMA_SR_IOC))
+        ;
+    if (dma_first)
+        printf("[dma] MM2S IOC: SR=0x%08x\n", mm2s_sr);
     REG_W(dma, DMA_MM2S_SR, DMA_SR_IOC);
 
-    while (!((s2mm_sr = REG_R(dma, DMA_S2MM_SR)) & DMA_SR_IOC));
-    if (dma_first) {
+    while (!((s2mm_sr = REG_R(dma, DMA_S2MM_SR)) & DMA_SR_IOC))
+        ;
+    if (dma_first)
+    {
         printf("[dma] S2MM IOC: SR=0x%08x  (dec=%d slv=%d int=%d)\n",
-               s2mm_sr, (s2mm_sr>>6)&1, (s2mm_sr>>5)&1, (s2mm_sr>>4)&1);
+               s2mm_sr, (s2mm_sr >> 6) & 1, (s2mm_sr >> 5) & 1, (s2mm_sr >> 4) & 1);
         printf("[dma] S2MM_LEN remaining=%u  (0=all xfr'd, 2048=nothing xfr'd)\n",
                REG_R(dma, DMA_S2MM_LEN));
         dma_first = 0;
@@ -190,7 +211,8 @@ static void dma_transfer(uint32_t src_phys, uint32_t dst_phys) {
 }
 
 // ── Main audio loop ───────────────────────────────────────────
-static void audio_loop(void) {
+static void audio_loop(void)
+{
     int cur = 0;
 
     // Bootstrap: fill buf[0] with live audio, process first DMA pass
@@ -198,16 +220,19 @@ static void audio_loop(void) {
     diag("before-boot");
 
     printf("[boot] filling first input buffer...\n");
-    for (int i = 0; i < N_SAMPLES; i++) {
-        while (!(REG_R(codec, CODEC_STATUS) & 1));
-        in_buf[0][i*2]   = (int32_t)REG_R(codec, CODEC_RX_L);
-        in_buf[0][i*2+1] = (int32_t)REG_R(codec, CODEC_RX_R);
+    for (int i = 0; i < N_SAMPLES; i++)
+    {
+        while (!(REG_R(codec, CODEC_STATUS) & 1))
+            ;
+        in_buf[0][i * 2] = (int32_t)REG_R(codec, CODEC_RX_L);
+        in_buf[0][i * 2 + 1] = (int32_t)REG_R(codec, CODEC_RX_R);
         REG_W(codec, CODEC_STATUS, 0);
     }
     diag_buf("in_buf[0]", in_buf[0]);
 
     // Sentinel: fill out_buf[0] with 0x12345678 to detect whether S2MM writes to it
-    for (int s = 0; s < N_WORDS; s++) out_buf[0][s] = (int32_t)0x12345678;
+    for (int s = 0; s < N_WORDS; s++)
+        out_buf[0][s] = (int32_t)0x12345678;
     printf("[boot] sentinel set: out_buf[0][0]=0x%08x\n", (uint32_t)out_buf[0][0]);
 
     dma_transfer(in_phys[0], out_phys[0]);
@@ -217,7 +242,7 @@ static void audio_loop(void) {
     {
         uint32_t ec = REG_R(effect, EFFECT_CTRL);
         printf("[boot] EFFECT_CTRL=0x%08x  ap_start=%d ap_done=%d ap_idle=%d ap_ready=%d\n",
-               ec, ec&1, (ec>>1)&1, (ec>>2)&1, (ec>>3)&1);
+               ec, ec & 1, (ec >> 1) & 1, (ec >> 2) & 1, (ec >> 3) & 1);
     }
     printf("[boot] out_buf[0][0]=0x%08x  (0x12345678=not written, other=DMA wrote)\n",
            (uint32_t)out_buf[0][0]);
@@ -240,25 +265,28 @@ static void audio_loop(void) {
 
     printf("[boot] entering audio loop (Ctrl+C to stop)\n");
 
-    while (1) {
+    while (1)
+    {
         int nxt = 1 - cur;
 
         // ── Combined TX + RX: one LRCLK period per iteration ─
         // Output processed audio (out_buf[cur]) while capturing
         // next input audio (in_buf[nxt]).
         // data_rdy fires at 48 kHz; this loop runs ~5.33 ms.
-        for (int i = 0; i < N_SAMPLES; i++) {
-            while (!(REG_R(codec, CODEC_STATUS) & 1));
+        for (int i = 0; i < N_SAMPLES; i++)
+        {
+            while (!(REG_R(codec, CODEC_STATUS) & 1))
+                ;
 
             // TX: write processed sample to codec DAC
-            REG_W(codec, CODEC_TX_L, (uint32_t)out_buf[cur][i*2]);
-            REG_W(codec, CODEC_TX_R, (uint32_t)out_buf[cur][i*2+1]);
+            REG_W(codec, CODEC_TX_L, (uint32_t)out_buf[cur][i * 2]);
+            REG_W(codec, CODEC_TX_R, (uint32_t)out_buf[cur][i * 2 + 1]);
 
             // RX: capture new sample from codec ADC
-            in_buf[nxt][i*2]   = (int32_t)REG_R(codec, CODEC_RX_L);
-            in_buf[nxt][i*2+1] = (int32_t)REG_R(codec, CODEC_RX_R);
+            in_buf[nxt][i * 2] = (int32_t)REG_R(codec, CODEC_RX_L);
+            in_buf[nxt][i * 2 + 1] = (int32_t)REG_R(codec, CODEC_RX_R);
 
-            REG_W(codec, CODEC_STATUS, 0);   // clear data_rdy
+            REG_W(codec, CODEC_STATUS, 0); // clear data_rdy
         }
 
         // ── DMA: process in_buf[nxt] → out_buf[nxt] (~5 μs) ─
@@ -269,12 +297,17 @@ static void audio_loop(void) {
 }
 
 // ── Entry point ───────────────────────────────────────────────
-int main(void) {
+int main(void)
+{
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0) { perror("open /dev/mem"); return 1; }
+    if (fd < 0)
+    {
+        perror("open /dev/mem");
+        return 1;
+    }
 
-    codec  = mmap_periph(fd, CODEC_BASE);
-    dma    = mmap_periph(fd, DMA_BASE);
+    codec = mmap_periph(fd, CODEC_BASE);
+    dma = mmap_periph(fd, DMA_BASE);
     effect = mmap_periph(fd, EFFECT_BASE);
     close(fd);
 
@@ -300,7 +333,7 @@ int main(void) {
         printf("[phys-verify] wrote 0xCAFEBABE via /dev/mem → virt reads 0x%08x\n", via_virt);
         munmap((void *)pm, 4096);
         close(fd2);
-        out_buf[0][0] = 0;  // clean up
+        out_buf[0][0] = 0; // clean up
     }
 
     effect_init();
@@ -308,7 +341,8 @@ int main(void) {
     audio_loop();
 
     // unreachable without signal handler
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++)
+    {
         cma_free(in_buf[i]);
         cma_free(out_buf[i]);
     }

@@ -54,37 +54,36 @@ void process_sample(
 
     static state_t state = {0, sample_t(0)};
 
-    for (int i = 0; i < n_samples; i++) {
+    // Loop over individual 32-bit words (n_samples*2 total: L0,R0,L1,R1,...).
+    // One read + one write per iteration → achieves II=1.
+    // Previous design (2 reads + 2 writes per iter) caused II=2, which made
+    // the DMA S2MM skip every other word (R samples never written to DDR).
+    // n_samples semantics unchanged: stereo pairs. PS still writes 256.
+    for (int i = 0; i < n_samples * 2; i++) {
 #pragma HLS PIPELINE II=1
 
-        audio_pkt_t pkt_l = s_in.read();
-        audio_pkt_t pkt_r = s_in.read();
+        audio_pkt_t pkt = s_in.read();
 
-        sample_t in_l, in_r, out_l, out_r;
-        in_l.range(23, 0) = pkt_l.data.range(23, 0);
-        in_r.range(23, 0) = pkt_r.data.range(23, 0);
+        sample_t in_s, out_s;
+        in_s.range(23, 0) = pkt.data.range(23, 0);
 
-        process_sample_core(in_l, in_r, &out_l, &out_r,
-                            dist_en, wobble_en,
-                            threshold, gain,
-                            lfo_rate, lfo_depth,
-                            &state);
+        if (dist_en) {
+            out_s = apply_distortion(in_s, threshold, gain);
+        } else {
+            out_s = in_s;
+        }
+        // Phase 3 wobble hook (disabled until Phase 3):
+        //   bool is_l = (i % 2 == 0);
+        //   if (wobble_en) out_s = apply_wobble(out_s, lfo_rate, lfo_depth,
+        //                                       &state, is_l);
+        // See docs/phase3.md §Loop restructure note for state_t L/R split.
 
-        bool is_last = (i == n_samples - 1);
-
-        audio_pkt_t out_l_pkt, out_r_pkt;
-        out_l_pkt.data = 0;
-        out_l_pkt.data.range(23, 0) = out_l.range(23, 0);  // bit-copy, not numeric cast
-        out_l_pkt.keep = ~0;   // TKEEP=all-valid → WSTRB=0xF per 32-bit word
-        out_l_pkt.strb = ~0;   // TSTRB=all-valid (required for 64-bit DMA WSTRB upper half)
-        out_l_pkt.last = 0;
-        out_r_pkt.data = 0;
-        out_r_pkt.data.range(23, 0) = out_r.range(23, 0);
-        out_r_pkt.keep = ~0;   // TKEEP=all-valid
-        out_r_pkt.strb = ~0;   // TSTRB=all-valid
-        out_r_pkt.last = is_last ? 1 : 0;
-
-        s_out.write(out_l_pkt);
-        s_out.write(out_r_pkt);
+        audio_pkt_t out_pkt;
+        out_pkt.data = 0;
+        out_pkt.data.range(23, 0) = out_s.range(23, 0);
+        out_pkt.keep = ~0;
+        out_pkt.strb = ~0;
+        out_pkt.last = (i == n_samples * 2 - 1) ? 1 : 0;
+        s_out.write(out_pkt);
     }
 }
