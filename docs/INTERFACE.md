@@ -224,5 +224,6 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 1 | AXI-Lite offset 定案（from HLS xprocess_sample_hw.h）；AXI GPIO base address 定案；AXI IIC base address 定案（`0x40800000`）；PYNQ 2.5 DT 限制與 AxiIIC 存取方式補充 |
 | Phase 2 | distortion 參數編碼定案：threshold 為 Q1.23 int，gain 為純整數 1–20；中間運算型別定案：`ap_fixed<32,6>`（Q6.26） |
 | Phase 6 | 資料 port（in_l/in_r/out_l/out_r/state）標記為 Phase 6 移除；新增 AXI-Stream 介面規格；新增 AXI DMA 欄位（base address TBD）；parameter offsets TBD 待 re-synthesis |
-| Phase 6 RTL | Effect IP Phase 6 AXI-Lite parameter offsets 確認（n_samples=0x10, dist_en=0x18, wobble_en=0x20, threshold=0x28, gain=0x30, lfo_rate=0x38, lfo_depth=0x40）；II=2（可接受）；IP base address 待 Vivado BD |
-| Phase 6 BUG | AXI-Stream 輸出 packet 必須顯式設 `.keep = ~0`；TKEEP=0 → WSTRB=0 → HP0 不寫 DDR（見 D23）；已修入 `process_sample.cpp` |
+| Phase 6 RTL | Effect IP Phase 6 AXI-Lite parameter offsets 確認（n_samples=0x10, dist_en=0x18, wobble_en=0x20, threshold=0x28, gain=0x30, lfo_rate=0x38, lfo_depth=0x40）；II=1（per-sample loop，n_samples×2 iters，見 D24）；IP base address 待 Vivado BD |
+| Phase 6 BUG D23 | AXI-Stream 輸出 packet 必須顯式設 `.keep = ~0`；TKEEP=0 → WSTRB=0 → HP0 不寫 DDR（見 D23）；已修入 `process_sample.cpp` |
+| Phase 6 BUG D24 | `hls::stream` 單端口 FIFO：原 2×read+2×write per iter 強制 II=2 → R channel 所有 sample 不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1（見 D24）；已修入 `process_sample.cpp`，待重新合成驗證 |

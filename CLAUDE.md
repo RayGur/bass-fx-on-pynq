@@ -89,7 +89,8 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - 板上確認：`pynq.allocate()` 可用、gcc 7.3.0 可用
   - Step A（HLS AXI-Stream 外殼）完成；Step B（PS `audio_dma.c`）完成
   - **BUG 修復（D23）**：`ap_axis` 輸出 packet 的 `.keep` 未設 → TKEEP=0 → WSTRB=0 → HP0 不寫 DDR；已加 `.keep = ~0`
-  - 下一步：HLS 重新合成 → Vivado Refresh IP → Generate Bitstream → 板上驗證
+  - **BUG 修復（D24）**：`hls::stream` 單端口 FIFO：原 2×read+2×write per iter 強制 II=2 → R channel 全部不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1；`process_sample.cpp` 已更新，待板上驗證
+  - 下一步：HLS 重新合成（含 D24 loop 修正）→ Vivado Refresh IP → Generate Bitstream → 板上驗證
 
 > 進度隨開發更新。
 

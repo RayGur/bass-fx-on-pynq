@@ -155,23 +155,30 @@ void process_sample_core(
 );
 ```
 
-### 3.3 PIPELINE II=1 限制
+### 3.3 PIPELINE II=1 限制（已觸發，已修正）
 
-Loop 內有兩次 `s_in.read()`，HLS 可能把這兩個 read 展開成兩個 pipeline stage（II=2）。  
-**若 II=1 達不到**，改成每次只讀一個 word，用奇偶 index 區分 L/R：
+`hls::stream` 是單端口 FIFO，每個 clock 最多一次 read 或 write。  
+原設計每次 iteration 做 2×read + 2×write → HLS 強制 II=2 → **R channel 完全不寫 DDR**（見 D24）。  
+**已改為 per-sample loop**（`n_samples * 2` 次，每次 1 read + 1 write）：
 
 ```cpp
-for (int i = 0; i < total; i++) {
+// per-sample loop：n_samples*2 iters，每次 1 read + 1 write → II=1
+for (int i = 0; i < n_samples * 2; i++) {
 #pragma HLS PIPELINE II=1
     audio_pkt_t pkt = s_in.read();
-    sample_t sample;
-    sample.range(23,0) = ap_int<24>(pkt.data);
-    bool is_L = (i % 2 == 0);
-    // ...累積 L，下一個 cycle 有 R 時一起處理
+    sample_t in_s, out_s;
+    in_s.range(23, 0) = pkt.data.range(23, 0);
+    // ...處理後寫出
+    audio_pkt_t out_pkt;
+    out_pkt.data.range(23, 0) = out_s.range(23, 0);
+    out_pkt.keep = ~0;  out_pkt.strb = ~0;
+    out_pkt.last = (i == n_samples * 2 - 1) ? 1 : 0;
+    s_out.write(out_pkt);
 }
 ```
 
-先試原版，synthesis report 確認 II 後再決定。
+> **已驗（D24）**：原 2×read+2×write per iter → HLS 強制 II=2 → R channel 所有 sample 不寫 DDR。  
+> Per-sample loop 為 Xilinx HLS + DMA 的 canonical pattern，詳見 §10 D24 節。
 
 ---
 
@@ -470,12 +477,45 @@ out_l_pkt.keep = ~0;   // 全部 byte enable 有效（TKEEP=0xF for 32-bit）
 out_r_pkt.keep = ~0;
 ```
 
-### 10.5 後續待完成
+### 10.5 根因 2：II=2 → R channel 不寫 DDR（D24）
 
-1. Vitis HLS：重新 C Sim → Run Synthesis → Export IP
+**觸發因子**：TKEEP fix（D23）後板測，左聲道 passthrough 正常，右聲道仍爆音。  
+`out_buf` 模式：`[L0_correct, 0x12345678, L1_correct, 0x12345678, ...]`（奇數索引永遠是 sentinel）。
+
+**根因**：`hls::stream` 是單端口 FIFO（UG1448），每個 clock cycle 最多 1 次 read **或** 1 次 write。  
+原 loop 每個 iteration 做 `s_in.read()×2 + s_out.write()×2` → HLS 強制 II=2 → S2MM 在 II=2 的節奏下只看到 L sample 佔用的寫入槽，R sample 的 write 被 schedule 到 S2MM 不接受的 cycle → R words 完全不落 DDR。
+
+**因果鏈**：
+```
+原 loop: [read_L, read_R, write_L, write_R] per iter
+  → hls::stream 單端口 FIFO 衝突 → HLS 強制 II=2
+  → 每 2 cycles 只完成 1 word 有效寫入
+  → S2MM store-and-forward：R channel write 被 AXI throttle 跳過
+  → out_buf 奇數位置 = sentinel（未被寫入）
+```
+
+**修正（已入 `process_sample.cpp`）**：
+```cpp
+// n_samples*2 iterations，每次 1 read + 1 write → II=1
+for (int i = 0; i < n_samples * 2; i++) {
+#pragma HLS PIPELINE II=1
+    audio_pkt_t pkt = s_in.read();
+    // ... process ...
+    s_out.write(out_pkt);
+}
+```
+
+**n_samples 語義不變**：PS 仍寫 256（stereo pairs），DMA buffer 仍 2048 bytes。  
+`process_sample_core()` 未動（only used by testbench，testbench 不過 DMA 硬體路徑）。
+
+**待驗**：HLS 重新合成 → Vivado Refresh IP → Generate Bitstream → 板上確認 R channel 正常。
+
+### 10.6 後續待完成
+
+1. Vitis HLS：重新 C Sim → Run Synthesis（含 D24 per-sample loop）→ Export IP
 2. Vivado：Refresh IP → Generate Bitstream → scp 上板
-3. 重跑 `codec_init.py` + `audio_dma`，確認 `out_buf[0][0]` 顯示 codec 音訊值（非 sentinel）
-4. 確認 passthrough 音訊正常後，開啟 `DEFAULT_DIST_EN 1` 測試 distortion
+3. 重跑 `codec_init.py` + `audio_dma`，確認 `out_buf[0][0]` 與 `out_buf[0][1]` 均顯示 codec 音訊值（非 sentinel）
+4. 確認 passthrough 音訊正常（左右聲道都正常）後，開啟 `DEFAULT_DIST_EN 1` 測試 distortion
 
 ### 10.6 診斷工具（本次開發，保留在 audio_dma.c）
 
@@ -498,7 +538,9 @@ out_r_pkt.keep = ~0;
 - [x] RTL Synthesis PASS（確認 II=1，LUT/DSP 用量合理）
 - [x] 確認 synthesis report 中 static state 保留
 - [x] Export IP
-- [x] **BUG FIX：output packet `.keep = ~0`（TKEEP=0 導致 S2MM 寫入 DDR 失敗，見 §10）**
+- [x] **BUG FIX D23：output packet `.keep = ~0`（TKEEP=0 導致 S2MM 寫入 DDR 失敗，見 §10.3）**
+- [x] **BUG FIX D24：per-sample loop（n_samples×2 iters，1 read+1 write）→ II=1，修正 R channel 不寫 DDR（見 §10.5）**
+- [ ] **重新 HLS C Sim + RTL Synthesis（含 D24 loop 修正）→ 確認 II=1 → Export IP**
 
 ### Step B — Vivado Block Design
 - [x] 加入 AXI DMA IP（MM2S + S2MM，c_include_sg=0）
