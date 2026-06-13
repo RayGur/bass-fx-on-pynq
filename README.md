@@ -24,36 +24,69 @@
 ## 架構
 
 ```
-JB62 → line-in → [audio_codec_ctrl]
-                        │  PS per-sample PIO(MVP) / DMA(加分)
-                  [Effect IP on PL]
-                   ├ distortion (hard clip)
-                   └ wobble (IIR + LFO)
-                        │
-                  [audio_codec_ctrl] → HP-out → amp
+JB62 → line-in → ADAU1761 codec
+                      │
+              PS (Cortex-A9 ARM)
+              ├ Mode A: per-sample PIO（MVP）
+              └ Mode B: DMA + 雙緩衝（Phase 6）
+                      │
+              Effect IP on PL (HLS)
+              ├ distortion (hard clip)
+              └ wobble (IIR + LFO)
+                      │
+              ADAU1761 codec → HP-out → bass amp
 ```
 
-效果參數透過 AXI-Lite 暫存器控制;switch / 按鈕透過 AXI GPIO 讀取。
+效果參數透過 AXI-Lite 暫存器控制；switch / 按鈕透過 AXI GPIO 讀取。
 
 ## 開發階段
 
 | Phase | 內容 | 狀態 |
 |-------|------|------|
-| 0 | 環境 sanity check、bypass 出聲 | 🔲 |
-| 1 | 最小 passthrough IP | 🔲 |
-| 2 | Distortion | 🔲 |
-| 3 | Wobble | 🔲 |
-| 4 | 按鈕切換 + AXI-Lite 調參(MVP) | 🔲 |
+| 0 | 環境 sanity check、bypass 出聲 | ✅ |
+| 1 | 最小 passthrough IP | ✅ |
+| 2 | Distortion（hard clip + AXI-Lite threshold/gain） | ✅ |
+| 3 | Wobble（IIR + LFO + AXI-Lite lfo_rate/lfo_depth） | 🔲 |
+| 4 | 按鈕切換 + AXI-Lite 調參（MVP） | 🔲 |
 | 5 | 效果串接 | 🔲 |
-| 6 | A→B:DMA + 雙緩衝 + 中斷(加分) | 🔲 |
+| 6 | A→B：DMA + 雙緩衝 + 中斷 | 🔄 |
 
 ## 文件
 
 | 文件 | 說明 |
 |------|------|
 | `docs/bass_fx_project_plan.md` | 整體架構、Phase 規劃、Exit Criteria |
-| `docs/INTERFACE.md` | 介面合約(函式簽章 / AXI-Lite 位址 / GPIO bit) |
+| `docs/INTERFACE.md` | 介面合約（函式簽章 / AXI-Lite 位址 / GPIO bit） |
+| `docs/decisions.md` | 設計決策紀錄 |
+| `docs/phase1.md` | Passthrough IP、codec 初始化繞過 libaudio |
+| `docs/phase2.md` | Distortion 實作、threshold decode 細節 |
+| `docs/phase3.md` | Wobble 實作（IIR + LFO） |
+| `docs/phase6.md` | DMA 升級、雙緩衝、AXI-Stream 外殼 |
 | `CLAUDE.md` | Claude Code 開發規則與指引 |
+
+
+
+## 測試
+
+生成完.bit和 .hwh以及ps 端driver
+`cp vivado\bass_fx\bass_fx.gen\sources_1\bd\bass_fx_bd\hw_handoff\bass_fx_bd.hwh vivado/bass_fx_bd.hwh`
+
+`cp vivado\bass_fx\bass_fx.runs\impl_1\bass_fx_bd_wrapper.bit vivado/bass_fx_bd.bit`
+
+SCP: 
+`scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/`
+`scp ps/audio_dma.c xilinx@192.168.2.99:~/`
+
+ssh進板子
+`ssh pynq-z2`
+
+先build
+`gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o audio_dma`
+
+再跑
+`sudo python3 ~/dma_test.py` (僅部分測試用)
+`sudo python3 codec_init.py && sudo ./audio_dma`
+
 
 ## 開發者
 
