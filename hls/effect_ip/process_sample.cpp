@@ -75,11 +75,13 @@ void process_sample(
         audio_pkt_t out_l_pkt, out_r_pkt;
         out_l_pkt.data = 0;
         out_l_pkt.data.range(23, 0) = out_l.range(23, 0);  // bit-copy, not numeric cast
-        out_l_pkt.keep = ~0;   // all byte enables valid; TKEEP=0 → WSTRB=0 → DMA no-write
+        out_l_pkt.keep = ~0;   // TKEEP=all-valid → WSTRB=0xF per 32-bit word
+        out_l_pkt.strb = ~0;   // TSTRB=all-valid (required for 64-bit DMA WSTRB upper half)
         out_l_pkt.last = 0;
         out_r_pkt.data = 0;
         out_r_pkt.data.range(23, 0) = out_r.range(23, 0);
-        out_r_pkt.keep = ~0;   // all byte enables valid
+        out_r_pkt.keep = ~0;   // TKEEP=all-valid
+        out_r_pkt.strb = ~0;   // TSTRB=all-valid
         out_r_pkt.last = is_last ? 1 : 0;
 
         s_out.write(out_l_pkt);
