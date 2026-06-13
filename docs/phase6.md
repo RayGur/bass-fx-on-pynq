@@ -510,14 +510,42 @@ for (int i = 0; i < n_samples * 2; i++) {
 
 **待驗**：HLS 重新合成 → Vivado Refresh IP → Generate Bitstream → 板上確認 R channel 正常。
 
-### 10.6 後續待完成
+### 10.6 根因 3：HP0 data width 32-bit → S2MM 8-byte stride，每隔一個 word 不寫 DDR（D25）
 
-1. Vitis HLS：重新 C Sim → Run Synthesis（含 D24 per-sample loop）→ Export IP
-2. Vivado：Refresh IP → Generate Bitstream → scp 上板
-3. 重跑 `codec_init.py` + `audio_dma`，確認 `out_buf[0][0]` 與 `out_buf[0][1]` 均顯示 codec 音訊值（非 sentinel）
-4. 確認 passthrough 音訊正常（左右聲道都正常）後，開啟 `DEFAULT_DIST_EN 1` 測試 distortion
+**觸發因子**：D24 確認 II=1 後，`dma_test.py` 獨立驗證仍出現：
+```
+out_buf[:8] = [0, 0xAAAAAAAA, 200, 0xAAAAAAAA, 400, ...]
+total written=256  sentinel=256  (expected written=512)
+```
 
-### 10.6 診斷工具（本次開發，保留在 audio_dma.c）
+**關鍵線索**：written 值是 `in_buf[0], in_buf[2], in_buf[4]`...（8-byte stride，不是 4-byte），確認 DMA 每次以 64-bit beat 寫入 HP0，WSTRB 只蓋低 32-bit，高 32-bit 跳過。
+
+**調查過程**：
+- 讀 HLS RTL（`process_sample_Pipeline_VITIS_LOOP_62_1.v`、`process_sample.v`）：TKEEP hardwired `4'd15`，TVALID 對全部 iteration 皆 fire。RTL 清潔，排除 HLS 層問題。
+- D23 / D24 皆已驗證修正，排除。
+- cache / FIFO / 位址：各方向驗證均排除。
+
+**根本原因**：Zynq HP0 內部匯流排實際上是 64-bit，`PCW_S_AXI_HP0_DATA_WIDTH=32` 僅改變 HWH 記錄，不改變底層硬體寬度。AXI Interconnect → HP0 以 64-bit beat 傳輸，WSTRB=0x0F（只有低 4 bytes），造成每 8 bytes 只寫一個 32-bit slot。
+
+**修正**：Vivado PS7 Customization → HP Slave AXI Interface → S AXI HP0 Interface Data Width 改為 **64** → Validate Design → Generate Bitstream（重新 build，不沿用舊 hp64 bitstream）。
+
+**驗證（板上 dma_test.py 輸出）**：
+```
+effect CTRL=0x81  n_samples=256
+in  phys=0x18075000  out phys=0x18076000
+post-reset SR: MM2S=0x0 S2MM=0x0
+S2MM SR=0x1002  LEN_rem=2048
+  halted=0 idle=1 int_err=0 slv_err=0 dec_err=0 ioc=1
+in_buf [:8] = [0, 100, 200, 300, 400, 500, 600, 700]
+out_buf[:8] = [0, 100, 200, 300, 400, 500, 600, 700]
+even positions match input (L-ch): True
+odd  positions all sentinel  (R-ch): False
+total written=512  sentinel=0  (expected written=512)
+```
+
+全部 512 個 word 正確寫入，DMA pipeline **完全通過**。`LEN_rem=2048` 是 DMA direct-register mode 正常行為（LEN register 讀回 programmed value），可忽略。
+
+### 10.7 診斷工具（本次開發，保留在 audio_dma.c）
 
 目前 `ps/audio_dma.c` 包含下列診斷，待 DMA 驗證通過後可選擇移除：
 - `[phys-verify]`：雙向 virt↔/dev/mem 驗證實體位址
@@ -540,31 +568,34 @@ for (int i = 0; i < n_samples * 2; i++) {
 - [x] Export IP
 - [x] **BUG FIX D23：output packet `.keep = ~0`（TKEEP=0 導致 S2MM 寫入 DDR 失敗，見 §10.3）**
 - [x] **BUG FIX D24：per-sample loop（n_samples×2 iters，1 read+1 write）→ II=1，修正 R channel 不寫 DDR（見 §10.5）**
-- [ ] **重新 HLS C Sim + RTL Synthesis（含 D24 loop 修正）→ 確認 II=1 → Export IP**
+- [x] **重新 HLS C Sim + RTL Synthesis（含 D24 loop 修正）→ 確認 II=1（Final II=1, Depth=5）→ Export IP**
 
 ### Step B — Vivado Block Design
 - [x] 加入 AXI DMA IP（MM2S + S2MM，c_include_sg=0）
 - [x] 加入 2 × AXI Stream FIFO（axis_data_fifo_0 / _1，depth=512）
 - [x] 加入 Concat IP，接 IRQ_F2P[0]
-- [x] HP0 data width 改為 32-bit（與 DMA M_AXI 寬度一致）
+- [x] **BUG FIX D25：HP0 data width 改為 64-bit**（Zynq HP0 內部 64-bit，設 32-bit 導致 WSTRB=0x0F per 64-bit beat，每隔一個 word 不寫 DDR；見 §10.6）
 - [x] axi_mem_intercon NUM_SI=2（MM2S + S2MM，無 SG port）
 - [x] Address Editor 確認（DMA=0x41E00000，Effect=0x40020000）
-- [ ] **重新 Generate Bitstream（含 TKEEP fix 的新 process_sample IP）**
+- [x] **Generate Bitstream 完成（含 D24 + D25 fix）**
 
 ### Step C — PS C 程式
 - [x] 確認板上 `libcma.so` 存在
 - [x] 實作 `audio_dma.c`（Combined TX/RX codec loop + DMA ping-pong，non-cacheable buffer）
 - [x] 板上編譯：`gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -O2 -o audio_dma`
 - [x] 加入完整診斷（phys-verify、effect readback、DMA SR、/dev/mem cross-check）
-- [ ] **驗證 TKEEP fix 後 out_buf 正確寫入（期望看到 codec 音訊值）**
+- [x] **DMA pipeline 驗證通過（dma_test.py：total written=512，sentinel=0，見 §10.6）**
 - [ ] Ping-pong 連續音訊迴圈測試（確認無 glitch）
 
 ### Step D — 上板整合驗證
-- [ ] 確認 passthrough 音訊正常（dist_en=0）
-- [ ] 確認 distortion 效果正常（dist_en=1，threshold/gain 調整）
-- [ ] 確認無 click / glitch（IIR state 跨 buffer 正常）
-- [ ] 與 Phase 2 Python PIO 聽感比較，確認音質改善
-- [ ] **Phase 6 Exit Criteria 確認**
+- [x] 確認 passthrough 音訊正常（dist_en=0）
+- [x] 確認 distortion 效果正常（dist_en=1，threshold/gain 調整）
+- [x] 確認無 click / glitch（IIR state 跨 buffer 正常）
+- [x] 與 Phase 2 Python PIO 聽感比較，確認音質改善
+- [x] **Phase 6 Exit Criteria 確認**
+
+### 後續優化（wobble merge + MMIO 串接完畢後處理）
+- [ ] **Distortion 高 gain 雜訊問題**：gain=20 時底噪被放大明顯，演奏時可聽到背景雜訊。原因：hard clipping 在放大後才 clip，低電平的底噪也被等比放大。對策選項：(A) 加入 noise gate（signal < 門檻時靜音）；(B) 限制 max gain（改為 12 或 15）；(C) 先 clip 再 gain（soft clipping 架構）。優先考量 A 或 B，成本低。
 
 ---
 

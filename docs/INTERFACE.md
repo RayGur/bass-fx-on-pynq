@@ -108,7 +108,7 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 
 ### Effect IP — Phase 6 DMA 版本 ✅（RTL Synthesis 確認，2026-06-12）
 
-> **IP base address：TBD（Vivado Block Design 建立後由 Address Editor 確認）**  
+> **IP base address：`0x4002_0000`**（Address Editor 確認，2026-06-13）  
 > **Parameter offsets 已由 RTL Synthesis 產出的 `csynth.rpt` 確認。**
 
 | 參數 | 方向 | byte offset | 說明 |
@@ -125,7 +125,7 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 | `lfo_rate` | PS→PL | `0x38` | wobble 掃動速率（32-bit int） |
 | `lfo_depth` | PS→PL | `0x40` | wobble 掃動範圍（32-bit int） |
 
-### Effect IP — Phase 6 AXI-Stream 介面 🔲
+### Effect IP — Phase 6 AXI-Stream 介面 ✅
 
 HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out_r：
 
@@ -226,4 +226,5 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 6 | 資料 port（in_l/in_r/out_l/out_r/state）標記為 Phase 6 移除；新增 AXI-Stream 介面規格；新增 AXI DMA 欄位（base address TBD）；parameter offsets TBD 待 re-synthesis |
 | Phase 6 RTL | Effect IP Phase 6 AXI-Lite parameter offsets 確認（n_samples=0x10, dist_en=0x18, wobble_en=0x20, threshold=0x28, gain=0x30, lfo_rate=0x38, lfo_depth=0x40）；II=1（per-sample loop，n_samples×2 iters，見 D24）；IP base address 待 Vivado BD |
 | Phase 6 BUG D23 | AXI-Stream 輸出 packet 必須顯式設 `.keep = ~0`；TKEEP=0 → WSTRB=0 → HP0 不寫 DDR（見 D23）；已修入 `process_sample.cpp` |
-| Phase 6 BUG D24 | `hls::stream` 單端口 FIFO：原 2×read+2×write per iter 強制 II=2 → R channel 所有 sample 不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1（見 D24）；已修入 `process_sample.cpp`，待重新合成驗證 |
+| Phase 6 BUG D24 | `hls::stream` 單端口 FIFO：原 2×read+2×write per iter 強制 II=2 → R channel 所有 sample 不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1（見 D24）；已修入 `process_sample.cpp`，重新合成 Final II=1 確認 ✅ |
+| Phase 6 BUG D25 | Zynq HP0 內部 64-bit 匯流排；`PCW_S_AXI_HP0_DATA_WIDTH=32` 只改 HWH 不改硬體 → WSTRB=0x0F per 64-bit beat → 每隔一個 32-bit word 不寫 DDR；修正：Vivado PS7 HP0 Data Width 改為 64，重建 bitstream（見 D25）；板上驗證 total written=512 ✅ |

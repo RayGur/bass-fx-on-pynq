@@ -384,6 +384,80 @@
 
 ---
 
+## D24. Phase 6 除錯：HLS loop II=2 → S2MM 跳寫，R channel 不寫 DDR
+
+- **背景**：D23 修復 TKEEP 後，`out_buf` 開始被寫入，但呈現**完美交錯 pattern**：偶數 index（L samples）寫入正確，奇數 index（R samples）永遠保持哨兵值。左耳可聽到 passthrough，右耳爆音。
+- **排除過的根因**：
+  - T1 DMA/FIFO/HP0 data width（hwh 確認全部 32-bit）
+  - T2 TSTRB=0（加 `.strb = ~0` 後重建 bitstream，pattern 不變）
+  - T3 AXI Interconnect 64-bit upsize（XBAR_DATA_WIDTH=32，排除）
+  - T4 cache（`/dev/mem` 直讀仍為哨兵，確認 DDR 本身未寫入）
+- **根本原因**：`hls::stream` 是**單端口 FIFO**，每個 clock 最多一次 read 或一次 write。原 loop body：
+  ```cpp
+  for (int i = 0; i < n_samples; i++) {
+  #pragma HLS PIPELINE II=1
+      s_in.read();   // read 1
+      s_in.read();   // read 2  ← 同一 FIFO 衝突
+      ...
+      s_out.write(out_l_pkt);  // write 1
+      s_out.write(out_r_pkt);  // write 2  ← 同一 FIFO 衝突
+  }
+  ```
+  HLS 強制 II=2（csynth.rpt `Issue Type: II, Interval: 2`）。AXI DMA S2MM store-and-forward 模式下，II=2 的輸出讓每隔一個 valid slot 才對應到 R write，R samples 的時序不被 S2MM 接收，造成 R 全數不寫 DDR。  
+  （已驗：Xilinx UG1448 定義此為 "interface contention (intra-iteration)"；UG1399 確認 hls::stream 單端口限制。）
+- **決定**：loop 改為 `n_samples * 2` 次迭代，每次 1 read + 1 write，L/R 以 `i % 2` 區分：
+  ```cpp
+  for (int i = 0; i < n_samples * 2; i++) {
+  #pragma HLS PIPELINE II=1   // 現在可達 II=1
+      audio_pkt_t pkt = s_in.read();
+      // process one sample...
+      s_out.write(out_pkt);
+  }
+  ```
+  `n_samples` 語義不變（stereo pairs），PS 仍寫 256，DMA buffer size 不變（2048 bytes）。
+- **修正位置**：`hls/effect_ip/process_sample.cpp`，`process_sample()` top function。
+- **Phase 3 連動**：`apply_wobble` 需加 `bool is_l` 參數（LFO phase 只在 L 推進）；`state_t.iir_prev` 需分成 `iir_prev_l` / `iir_prev_r`。見 `docs/phase3.md §11`。
+- **注意**：此 bug 無法被 HLS C Sim 偵測（sim 不走 DMA 硬體）。
+- **影響**：需重新 HLS 合成 → Vivado Refresh IP → Generate Bitstream → 重新上板。
+
+---
+
+## D25. Phase 6 除錯：HP0 data width 32-bit → 交錯寫入 pattern（S2MM 每隔一個 word 不寫 DDR）
+
+- **背景**：D24 修復 per-sample loop（II=1）後，`dma_test.py` 獨立測試（N=256，in_buf=i×100，sentinel=0xAAAAAAAA）仍然出現：
+  ```
+  out_buf[:8] = [0, 0xAAAAAAAA, 200, 0xAAAAAAAA, 400, ...]
+  total written=256  sentinel=256  (expected written=512)
+  ```
+  偶數 index 寫入正確（且值等於 `in_buf[even]`，不是 `in_buf[odd]`），奇數 index 永遠是 sentinel。
+- **關鍵觀察**：
+  - written 的值是 `in_buf[0], in_buf[2], in_buf[4]`...（**8-byte stride**，不是 4-byte），代表 S2MM 每次以 64-bit beat 寫入，但只有低 32-bit 有 WSTRB，高 32-bit 全跳過。
+  - MM2S 側亦相同：從 DDR 讀進 HLS 的是 `in_buf[0], in_buf[2]...`，所以輸出也是每隔一個值。
+  - 用 Python `dma_test.py`（非 `audio_dma.c`）獨立驗證，排除 PS C 程式問題。
+- **排除的根因**：
+  - HLS RTL 已讀過：`TKEEP` 硬接線 `4'd15`，`TVALID` 對全部 510 次 iteration 皆 fire。RTL 清潔，無 HLS 層問題。
+  - D23（TKEEP=0）：已修正並驗證（synthesis report 確認 TKEEP hardwired）。
+  - D24（II=2）：已修正，Final II=1 在 csynth.rpt 確認；但硬體仍失敗，排除為充分條件。
+  - cache 問題：non-cacheable CMA 和 explicit invalidate 兩種方式皆出現相同 pattern。
+  - FIFO 溢出：N=255 < FIFO_DEPTH=512，同樣 pattern。
+  - AXI-Lite 位址或參數設定：各項 readback 驗證正確。
+- **根本原因**：Zynq-7000 的 S_AXI_HP port 內部匯流排**實際上是 64-bit**，即使 `PCW_S_AXI_HP0_DATA_WIDTH=32` 的參數也不改變底層硬體寬度。  
+  當 HWH/PS 設 32-bit 時，AXI Interconnect 與 HP0 之間的接口以 64-bit 運作，每個 64-bit beat 只有低 32-bit 有效 WSTRB（=0x0F），高 32-bit WSTRB=0x0（不寫 DDR）。S2MM 每 64-bit beat 只寫一個 32-bit word，造成 8-byte stride、每隔一個 slot 空白的 pattern。MM2S 讀取亦相同（每次讀取 64-bit 但只傳 32-bit 給 DMA，跳過另一個 word）。
+- **決定**：在 Vivado PS7 Customization 將 `S AXI HP0 Interface Data Width` 從 32 改為 **64**，重新 Validate Design + Generate Bitstream。
+- **修改位置**：Vivado Block Design → double-click `processing_system7_0` → PS-PL Configuration → HP Slave AXI Interface → S AXI HP0 Interface → Data Width = 64 → Validate（F6）→ Generate Bitstream。
+- **驗證**（`dma_test.py` 重跑）：
+  ```
+  out_buf[:8] = [0, 100, 200, 300, 400, 500, 600, 700]
+  total written=512  sentinel=0  (expected written=512)
+  ```
+  全部 512 個 word 正確寫入。
+- **附注 1**：`LEN_rem=2048`（S2MM 完成後 LENGTH 暫存器讀回 2048）是 Xilinx AXI DMA direct-register mode 的正常行為；LEN 暫存器讀回 programmed value，不倒數，可忽略。
+- **附注 2**：先前已有 `bass_fx_bd_hp64.bit`（舊版 build，未含 D24 fix），測試時顯示 `total written=0`。懷疑是舊 BD 有其他 interconnect 配置問題。**正確做法是從乾淨的 bass_fx_bd BD 出發，在 PS7 改 HP0 width 後重新 Generate Bitstream**，而非直接使用舊 hp64 檔案。
+- **影響範圍**：DMA S2MM + MM2S 兩條路徑皆受惠；`audio_dma.c` 和 `dma_test.py` 不需改動。
+- **參考**：Zynq-7000 TRM（UG585）§11.2 AXI Slave Port（HP）說明；Xilinx forum 討論 HP port 實際寬度 vs. PCW 參數的差異。
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
 - `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。

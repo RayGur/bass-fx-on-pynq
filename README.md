@@ -49,7 +49,7 @@ JB62 → line-in → ADAU1761 codec
 | 3 | Wobble（IIR + LFO + AXI-Lite lfo_rate/lfo_depth） | 🔲 |
 | 4 | 按鈕切換 + AXI-Lite 調參（MVP） | 🔲 |
 | 5 | 效果串接 | 🔲 |
-| 6 | A→B：DMA + 雙緩衝 + 中斷 | 🔄 |
+| 6 | A→B：DMA + 雙緩衝 + 中斷 | ✅ |
 
 ## 文件
 
@@ -66,26 +66,63 @@ JB62 → line-in → ADAU1761 codec
 
 
 
-## 測試
+## 測試與部署
 
-生成完.bit和 .hwh以及ps 端driver
-`cp vivado\bass_fx\bass_fx.gen\sources_1\bd\bass_fx_bd\hw_handoff\bass_fx_bd.hwh vivado/bass_fx_bd.hwh`
+### 1. 生成 bitstream（Vivado）
 
-`cp vivado\bass_fx\bass_fx.runs\impl_1\bass_fx_bd_wrapper.bit vivado/bass_fx_bd.bit`
+Vivado 合成完成後，將 bitstream 與 HWH 複製到 `vivado/`：
 
-SCP: 
-`scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/`
-`scp ps/audio_dma.c xilinx@192.168.2.99:~/`
+```bash
+cp vivado/bass_fx/bass_fx.gen/sources_1/bd/bass_fx_bd/hw_handoff/bass_fx_bd.hwh vivado/bass_fx_bd.hwh
+cp vivado/bass_fx/bass_fx.runs/impl_1/bass_fx_bd_wrapper.bit vivado/bass_fx_bd.bit
+```
 
-ssh進板子
-`ssh pynq-z2`
+> **注意**：`.bit` 與 `.hwh` 須同名成對，不進 Git（另行共享）。
 
-先build
-`gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o audio_dma`
+### 2. 傳至板子
 
-再跑
-`sudo python3 ~/dma_test.py` (僅部分測試用)
-`sudo python3 codec_init.py && sudo ./audio_dma`
+```bash
+scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/
+scp ps/audio_dma.c ps/dma_test.py xilinx@192.168.2.99:~/
+```
+
+### 3. SSH 進板子
+
+```bash
+ssh xilinx@192.168.2.99
+```
+
+### 4. 板上編譯
+
+```bash
+gcc ~/audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o ~/audio_dma
+```
+
+### 5. 執行
+
+**DMA pipeline 驗證**（不需 codec，純 DMA 測試）：
+
+```bash
+sudo python3 ~/dma_test.py
+```
+
+**完整音訊執行**：
+
+```bash
+sudo python3 ~/codec_init.py && sudo ~/audio_dma
+```
+
+### 6. 即時調整效果參數（另開終端機）
+
+```python
+from pynq import MMIO
+eff = MMIO(0x40020000, 0x10000)
+
+eff.write(0x18, 1)                      # dist_en = 1（開 distortion）
+eff.write(0x28, int(0.3 * (1 << 23)))  # threshold = 0.3
+eff.write(0x30, 8)                      # gain = 8（1–20）
+eff.write(0x20, 1)                      # wobble_en = 1（開 wobble）
+```
 
 
 ## 開發者
