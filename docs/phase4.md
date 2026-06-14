@@ -1,18 +1,18 @@
 # Phase 4 + 5 — GPIO 控制 + 效果串接（MVP 完成）
 
-> **狀態：🔲 進行中**（branch: `feat/gpio`）
+> **狀態：✅ 完成**（branch: `feat/gpio`，板上驗證 PASS 2026-06-14）
 >
 > **目標**：
 > - Phase 4：sw/btn/LED 完整控制迴路；按鈕切換 low/high 參數組；MVP 完成。
 > - Phase 5：sw[0]+sw[1] 同開即串接（dist → wobble），HLS 已支援，PS 端直接達成。
 >
 > **Exit Criteria（Phase 4 + 5 合並驗證）**：
-> - [ ] sw[0] 切開/關，distortion 即時生效；sw[1] 同理
-> - [ ] btn[0] 短按翻轉 distortion 強度，led[0] 對應更新
-> - [ ] btn[1] 短按翻轉 wobble 速率，led[1] 對應更新
-> - [ ] RGB LD4 亮滅與 sw[0] 同步；LD5 與 sw[1] 同步
-> - [ ] sw[0]+sw[1] 同開，串接效果可聽、不爆音（Phase 5 Exit Criteria）
-> - [ ] 效果切換期間音訊無爆音（clamp 生效）
+> - [x] sw[0] 切開/關，distortion 即時生效；sw[1] 同理
+> - [x] btn[0] 短按翻轉 distortion 強度，led[0] 對應更新
+> - [x] btn[1] 短按翻轉 wobble 速率，led[1] 對應更新
+> - [x] RGB LD4 亮滅與 sw[0] 同步；LD5 與 sw[1] 同步
+> - [x] sw[0]+sw[1] 同開，串接效果可聽、不爆音（Phase 5 Exit Criteria）
+> - [x] 效果切換期間音訊無爆音（clamp 生效）
 
 ---
 
