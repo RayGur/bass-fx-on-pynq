@@ -13,7 +13,14 @@
 *.ip_user_files/
 *.sim/
 *.gen/
-vivado/
+vivado/**/*.runs/
+vivado/**/*.cache/
+vivado/**/*.hw/
+vivado/**/*.ip_user_files/
+vivado/**/*.sim/
+vivado/**/*.gen/
+vivado/**/*.str
+vivado/**/.Xil/
 vivado*.jou
 vivado*.log
 vivado_pid*.str
