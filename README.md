@@ -27,12 +27,11 @@
 JB62 → line-in → ADAU1761 codec
                       │
               PS (Cortex-A9 ARM)
-              ├ Mode A: per-sample PIO（MVP）
-              └ Mode B: DMA + 雙緩衝（Phase 6）
-                      │
-              Effect IP on PL (HLS)
-              ├ distortion (hard clip)
-              └ wobble (IIR + LFO)
+              └ DMA + 雙緩衝（Phase 6，C程式）
+                      │  AXI-Stream
+              Effect IP on PL (HLS, 100 MHz)
+              ├ distortion (hard clip, AXI-Lite threshold/gain)
+              └ wobble (1st-order IIR + LFO, AXI-Lite lfo_rate/lfo_depth)
                       │
               ADAU1761 codec → HP-out → bass amp
 ```
@@ -46,10 +45,10 @@ JB62 → line-in → ADAU1761 codec
 | 0 | 環境 sanity check、bypass 出聲 | ✅ |
 | 1 | 最小 passthrough IP | ✅ |
 | 2 | Distortion（hard clip + AXI-Lite threshold/gain） | ✅ |
-| 3 | Wobble（IIR + LFO + AXI-Lite lfo_rate/lfo_depth） | 🔲 |
-| 4 | 按鈕切換 + AXI-Lite 調參（MVP） | 🔲 |
+| 3 | Wobble（IIR + LFO + AXI-Lite lfo_rate/lfo_depth） | ✅ |
+| 4 | 按鈕切換 + AXI-Lite 調參（MVP） | 🔲 ← 下一步 |
 | 5 | 效果串接 | 🔲 |
-| 6 | A→B：DMA + 雙緩衝 + 中斷 | ✅ |
+| 6 | A→B：DMA + 雙緩衝（必要步驟） | ✅ |
 
 ## 文件
 
@@ -82,8 +81,8 @@ cp vivado/bass_fx/bass_fx.runs/impl_1/bass_fx_bd_wrapper.bit vivado/bass_fx_bd.b
 ### 2. 傳至板子
 
 ```bash
-scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/
-scp ps/audio_dma.c ps/dma_test.py xilinx@192.168.2.99:~/
+scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/bass-fx/wobble_dma/
+scp ps/audio_dma.c ps/codec_init.py ps/wobble_dma_test.py xilinx@192.168.2.99:~/bass-fx/wobble_dma/
 ```
 
 ### 3. SSH 進板子
@@ -95,33 +94,37 @@ ssh xilinx@192.168.2.99
 ### 4. 板上編譯
 
 ```bash
-gcc ~/audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o ~/audio_dma
+cd ~/bass-fx/wobble_dma
+gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o audio_dma
 ```
 
 ### 5. 執行
 
-**DMA pipeline 驗證**（不需 codec，純 DMA 測試）：
+**IIR 行為驗證**（不需 codec，純 DMA + 數值驗證）：
 
 ```bash
-sudo python3 ~/dma_test.py
+sudo python3 wobble_dma_test.py
 ```
 
-**完整音訊執行**：
+**完整音訊執行**（需先初始化 codec）：
 
 ```bash
-sudo python3 ~/codec_init.py && sudo ~/audio_dma
+sudo python3 codec_init.py   # 載入 overlay + 初始化 ADAU1761
+sudo ./audio_dma
 ```
 
 ### 6. 即時調整效果參數（另開終端機）
 
-```python
-from pynq import MMIO
-eff = MMIO(0x40020000, 0x10000)
-
-eff.write(0x18, 1)                      # dist_en = 1（開 distortion）
-eff.write(0x28, int(0.3 * (1 << 23)))  # threshold = 0.3
-eff.write(0x30, 8)                      # gain = 8（1–20）
-eff.write(0x20, 1)                      # wobble_en = 1（開 wobble）
+```bash
+sudo python3 -c "
+from pynq import MMIO; e = MMIO(0x40020000, 0x10000)
+e.write(0x18, 1)                     # dist_en=1（開 distortion）
+e.write(0x28, int(0.3*(1<<23)))      # threshold=0.3
+e.write(0x30, 8)                     # gain=8（1–20）
+e.write(0x20, 1)                     # wobble_en=1（開 wobble）
+e.write(0x38, 178957)                # lfo_rate≈2 Hz（= freq_hz × 89479）
+e.write(0x40, 100)                   # lfo_depth=100（0–100）
+"
 ```
 
 

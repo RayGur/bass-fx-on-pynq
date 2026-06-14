@@ -458,11 +458,36 @@
 
 ---
 
+## D26. 板上實測：wobble 效果深度不足（Post-MVP 優化待辦）
+
+- **背景**：Phase 3 wobble 整合進 Phase 6 DMA 架構後（2026-06-14），接 ADAU1761 codec + bass 實測，wobble 掃動效果太細微，與 distortion 串接時尤為明顯。
+- **根本原因**：
+  1. **一階 IIR（6 dB/oct）rolloff 太緩**：低通濾波器頻率響應不夠陡，截止頻率前後音量差異不明顯，bass 低頻基音（40–400 Hz）幾乎不受影響。
+  2. **B_LUT 掃動範圍**（b ≈ 0.026–0.704，約 200 Hz–10 kHz）集中在中高頻，對 bass 基音效果有限。
+  3. **與 distortion 串接時**：distortion 產生的諧波被 wobble 低通削減，但 wobble 本身對基音的調變已很弱，整體效果不明顯。
+- **後續優化選項（Post-MVP）**：
+  - A）升 2nd-order IIR（12 dB/oct）：效果更明顯，但需增加 HLS 資源（loop-carried state 距離加深，需確認 II 仍可達 1）。
+  - B）調整 B_LUT 範圍：將掃動下緣推低（如 20–2000 Hz），使 bass 基音也進入掃動區。
+  - C）加諧振（Q factor）：在截止頻率附近加 boost，wah 感更強，但設計複雜度大增。
+  - **建議先試 B**：修改 B_LUT 成本最低（純軟體），無需改 HLS 架構，不影響 II。
+- **影響範圍**：`hls/effect_ip/wobble.cpp`（B_LUT 調整）或 `process_sample.cpp`（2nd-order state 擴充）。
+
+---
+
+## D27. 板上實測：distortion 高 gain 雜訊放大（Post-MVP 優化待辦）
+
+- **背景**：Phase 6 DMA 架構接 codec 實測（2026-06-14），distortion gain 調高時，底噪（noise floor）被明顯放大，與 passthrough 和 wobble 模式相比差異顯著。
+- **根本原因**：hard clipping 在 clip 之前對全頻訊號（含底噪）先做 `gain` 倍放大。底噪從原本不可聞（codec ADC 量化噪 ≈ −144 dBFS @ 24-bit）經 ×8–20 放大後提升 18–26 dB，進入可聞範圍。被動 bass 直插 line-in 的阻抗不匹配（D1 §5.3）也使底噪比例偏高，加劇問題。
+- **後續優化選項（Post-MVP）**：
+  - A）**加 noise gate**（建議首選）：在 gain 放大前判斷 `|in| < noise_threshold`，若成立則輸出 0（靜音）。noise_threshold 可設為獨立的 AXI-Lite 參數，讓 PS 動態調整。實作成本低，HLS 一個 `if` 即可，不影響 II。
+  - B）**soft knee clipping**：把硬切換成平滑過渡，減少截波產生的高諧波，但對底噪本身無幫助。
+  - C）主動 DI（硬體）：改善阻抗匹配，降低底噪源頭，但這是 demo 佈置問題，非 IP 問題。
+  - **建議先試 A**：noise gate 實作最簡單，直接在 `apply_distortion()` 加判斷，不需改介面合約，可搭配 B 使用。
+- **影響範圍**：`hls/effect_ip/distortion.cpp`、`effect_ip.h`（若新增 noise_threshold 參數則需更新 AXI-Lite 位址表並通知 Claire）。
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
-- `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。
-- low/high 參數的實際數值(Phase 4,調出好聽範圍)。
-- wobble 中間運算型別寬度（Phase 3）。
-- wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。
-- Phase 6 DMA base address（Vivado Address Editor 重新 build 後確認）。
-- Phase 6 HLS 合成後 AXI-Lite parameter offsets 是否有變（重新 synthesis 後確認 `xprocess_sample_hw.h`）。
+- low/high 參數的實際數值（Phase 4，調出好聽範圍）。
+- Phase 4 按鈕對應的效果切換邏輯與預設參數組設計。

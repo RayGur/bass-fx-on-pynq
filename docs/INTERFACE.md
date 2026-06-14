@@ -3,8 +3,7 @@
 本檔定義 Ray / Claire 平行開發的介面合約。**訂定後視為凍結**;要修改必須先改本檔、通知對方、再動 code,不可私自更動。改動須有依據(例如實測發現不可行),不是不能改,而是不能默默改。
 
 > 狀態:
-> - ✅ 已定案:GPIO / LED 接腳與功能、定點數 Q 格式、AXI-Lite byte offset、distortion 參數編碼（Phase 2）
-> - 🔲 待定案：`process_sample()` 完整簽章（Phase 3 wobble 定案後補全）、wobble 濾波器係數查表
+> - ✅ 已定案:GPIO / LED 接腳與功能、定點數 Q 格式、AXI-Lite byte offset、distortion 參數編碼（Phase 2）、`process_sample()` 完整簽章 + `state_t` + wobble 參數編碼（Phase 3）
 
 ---
 
@@ -16,7 +15,7 @@
 |------|------|--------|------|
 | 音訊 sample | `ap_fixed<24,1>` | Q1.23 | 1 符號位 + 23 小數位,範圍 [−1, +1);對應 codec 24-bit |
 | 中間運算（distortion）| `ap_fixed<32,6>` | Q6.26 | 6 整數位（範圍 [−32, +32)），可承載 gain 20x；運算完 clamp 回 Q1.23 |
-| 中間運算（wobble）| `ap_fixed<W,I>`（W≥32）| 待 Phase 3 定案 | IIR / LFO 運算範圍待確認後回填 |
+| 中間運算（wobble IIR）| `ap_fixed<32,2>` | Q2.30 | IIR y 值及 iir_prev 儲存型別；範圍 [−2,+2)，實際值 ≤ [−1,+1) |
 | 參數(AXI-Lite 傳入) | `int`(32-bit) | — | PS 傳整數,IP 內部解讀規則見下方各效果說明 |
 
 原則:
@@ -42,40 +41,72 @@ out = clamp(amp, -thr, +thr);           // hard clip
 
 ---
 
-## 2. `process_sample()` 簽章 🔲(候選,待 Phase 2/3 定案)
+## 2. `process_sample()` 簽章 ✅（Phase 3 定案，2026-06-14）
 
 效果運算核心。與外殼(PIO / DMA)解耦,A、B 階段共用同一份。外殼負責搬資料,本函式只負責運算。
 
-### HLS 檔案結構(見 D11)
+### HLS 檔案結構
 
 | 檔案 | 責任人 | 說明 |
 |------|--------|------|
-| `hls/effect_ip/process_sample.cpp` | Ray | 薄整合層,呼叫 distortion / wobble;HLS 合成入口 |
+| `hls/effect_ip/process_sample.cpp` | Ray | AXI-Stream top function + `process_sample_core()`；HLS 合成入口 |
 | `hls/effect_ip/distortion.cpp` | Ray | distortion hard clipping 演算法 |
-| `hls/effect_ip/wobble.cpp` | Claire | wobble IIR + LFO 演算法 |
+| `hls/effect_ip/wobble.cpp` | Claire | wobble IIR + LFO 演算法（Phase 3 整合）|
 
-三個檔案合成成**單一 IP**,各自負責各自的 .cpp,Git 衝突最小化。
+### 跨 sample 狀態 `state_t`（定案）
 
-```c
-// 候選簽章 — 處理單一 stereo sample
-// 參數由 AXI-Lite 傳入;開關來自 AXI GPIO;運算核心不接觸 AXI/stream 細節
-//
-// void process_sample(
-//     sample_t in_l, sample_t in_r,        // 輸入(mono 來源已於 IP 入口複製為 L/R)
-//     sample_t *out_l, sample_t *out_r,    // 輸出
-//     bool  dist_en, bool wobble_en,       // 效果開關(來自 sw[0]/sw[1])
-//     param_t threshold, param_t gain,     // distortion 參數
-//     param_t lfo_rate, param_t lfo_depth, // wobble 參數
-//     state_t *state                       // 跨 sample 狀態(LFO 相位、IIR 歷史)
-// );
-//
-// sample_t = ap_fixed<24,1>;  param_t = int
+```cpp
+typedef struct {
+    ap_uint<32>    lfo_phase;    // LFO 相位累加器，自然 wrap at 2^32
+    ap_fixed<32,2> iir_prev_L;  // 左聲道 IIR 前一輸出（unclamped y，Q2.30）
+    ap_fixed<32,2> iir_prev_R;  // 右聲道 IIR 前一輸出（unclamped y，Q2.30）
+} state_t;
 ```
 
-待 Phase 2/3 定案:
-- 跨 sample 狀態(`state_t`)的具體欄位:LFO 相位累加器、IIR 前一輸出值等。
-- 串接時級間順序與 clamp 點(規劃:in → distortion → wobble → out,每級後 clamp)。
-- 串接由 `dist_en` / `wobble_en` 控制;兩者皆 true 即串接。
+Phase 6 DMA 架構中，`state` 以 `static` 變數存於 `process_sample()` 內，跨 DMA 傳輸保留（AUTO_RESTART 不重置）。
+
+### 函式簽章（定案）
+
+```cpp
+// AXI-Stream top function（Phase 6）
+void process_sample(
+    hls::stream<audio_pkt_t> &s_in,
+    hls::stream<audio_pkt_t> &s_out,
+    int     n_samples,
+    bool    dist_en,   bool    wobble_en,
+    param_t threshold, param_t gain,
+    param_t lfo_rate,  param_t lfo_depth
+);
+
+// 核心運算（一個 stereo pair，testbench 直接呼叫）
+void process_sample_core(
+    sample_t in_l, sample_t in_r, sample_t *out_l, sample_t *out_r,
+    bool dist_en, bool wobble_en,
+    param_t threshold, param_t gain,
+    param_t lfo_rate, param_t lfo_depth,
+    state_t *state
+);
+
+// wobble（#pragma HLS INLINE）
+// is_l=true → advance lfo_phase，用 iir_prev_L
+// is_l=false → hold phase，用 iir_prev_R
+sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
+                      state_t *state, bool is_l);
+```
+
+### 串接邏輯
+
+串接順序（phase 5）：`in → distortion → wobble → out`，每級後 clamp 到 [−1, +0.9999]。由 `dist_en` / `wobble_en` 控制；兩者皆 true 即串接。
+
+### Wobble 參數編碼（Phase 3 定案）✅
+
+| 參數 | AXI-Lite 型別 | HLS 解讀 | PS 端寫法範例 |
+|------|--------------|---------|------------|
+| `lfo_rate` | `int`（32-bit）| LFO 相位每個 L-sample 的增量；`f_Hz = lfo_rate × 48000 / 2^32` | `89478` → 1 Hz；`357914` → 4 Hz |
+| `lfo_depth` | `int`（32-bit）| 0–100，控制 B_LUT 查表索引範圍 | `100` → 最大掃動深度 |
+
+**B_LUT**：16 entries，Q15 格式的 IIR 係數 b（858–23061，對應 b ≈ 0.026–0.704）。  
+**LFO 波形**：32-bit 相位累加器，bit31 作方向，bits[30:23] 作三角波 frac（triangle wave）。
 
 ---
 
@@ -228,3 +259,4 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 6 BUG D23 | AXI-Stream 輸出 packet 必須顯式設 `.keep = ~0`；TKEEP=0 → WSTRB=0 → HP0 不寫 DDR（見 D23）；已修入 `process_sample.cpp` |
 | Phase 6 BUG D24 | `hls::stream` 單端口 FIFO：原 2×read+2×write per iter 強制 II=2 → R channel 所有 sample 不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1（見 D24）；已修入 `process_sample.cpp`，重新合成 Final II=1 確認 ✅ |
 | Phase 6 BUG D25 | Zynq HP0 內部 64-bit 匯流排；`PCW_S_AXI_HP0_DATA_WIDTH=32` 只改 HWH 不改硬體 → WSTRB=0x0F per 64-bit beat → 每隔一個 32-bit word 不寫 DDR；修正：Vivado PS7 HP0 Data Width 改為 64，重建 bitstream（見 D25）；板上驗證 total written=512 ✅ |
+| Phase 3 | `process_sample()` 完整簽章定案；`state_t` 欄位定案（lfo_phase + iir_prev_L/R, ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`；wobble 參數編碼定案（lfo_rate=相位增量，lfo_depth=0–100）；中間運算型別 `ap_fixed<32,2>` 定案；板上音訊驗證 PASS（2026-06-14）|

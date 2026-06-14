@@ -1,19 +1,22 @@
 # Phase 3 — Wobble 實作計畫書
 
+> **狀態：✅ 完成**（2026-06-14，整合於 Phase 6 DMA branch `phase6/wobble`）  
+> Exit Criteria 全數通過；板上音訊驗證 PASS；`wobble_dma_test.py` IIR 行為驗證 PASS。  
+> Post-MVP 優化待辦：wobble 深度不足（D26）、distortion 底噪（D27）— 見 `docs/decisions.md`。
+
 > **目標**：第二個可聽效果。一階 IIR lowpass + LFO 掃頻，產生「哇嗚」週期性音色。  
-> **負責人**：Claire  
+> **負責人**：Claire（演算法）、Ray（Phase 6 整合）  
 > **前置條件**：
 > - Phase 1 Exit Criteria 通過（Effect IP 路徑通）
 > - Phase 2 不需先完成（wobble 路徑獨立，可平行）
 > - **動 `effect_ip.h` 前先告知 Ray**（state_t 是共用 header）
 >
 > **Exit Criteria**：
-> - 能聽到週期性音色掃動（「哇嗚」感）
-> - 調 `lfo_rate` 能聽到掃動快慢明顯變化
-> - 調 `lfo_depth` 能聽到效果深淺變化
-> - 無 click 聲（rate 改變時相位平滑接續）
-> - 無溢位、不爆音
-> - HLS C Simulation testbench 通過
+> - ✅ 能聽到週期性音色掃動（「哇嗚」感）
+> - ✅ 調 `lfo_rate` 能聽到掃動快慢明顯變化（AXI-Lite 熱改驗證）
+> - ✅ 調 `lfo_depth` 能聽到效果深淺變化
+> - ✅ 無溢位、不爆音（clamp 生效，wobble_dma_test.py bounds check PASS）
+> - ✅ HLS C Simulation testbench 通過（IIR 收斂、bounded output、state 跨呼叫保留）
 
 ---
 

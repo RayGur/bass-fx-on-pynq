@@ -462,7 +462,41 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 ---
 
-## 14. 參考資料
+## 14. Post-MVP 音質優化待辦（板上實測發現，2026-06-14）
+
+以下問題在 Phase 3+6 整合板上實測後發現，不阻擋 MVP（Phase 4）完成，列為 MVP 後的優化項目。
+
+### 14.1 Wobble 效果深度不足（D26）
+
+**症狀**：wobble 掃動效果太細微，與 distortion 串接時尤為明顯。  
+**根因**：一階 IIR（6 dB/oct）rolloff 太緩；B_LUT 掃動範圍集中在中高頻，對 bass 基音（40–400 Hz）效果有限。  
+**優化方向**（依實作成本排序）：
+
+| 選項 | 成本 | 效果 |
+|------|------|------|
+| 調整 B_LUT 掃動下緣（推低至 20–2000 Hz） | 低（純軟體，改 `wobble.cpp`） | 讓 bass 基音進入掃動區 |
+| 升 2nd-order IIR（12 dB/oct） | 中（擴充 `state_t`，需確認 II=1） | rolloff 更陡，wah 感更強 |
+| 加諧振 Q factor | 高（架構改動大） | 最接近 wah pedal 感 |
+
+**建議**：先試 B_LUT 調整，成本最低且不影響合成 II。
+
+### 14.2 Distortion 高 gain 雜訊放大（D27）
+
+**症狀**：gain 調高時底噪（noise floor）明顯放大，與 passthrough / wobble 相比差異顯著。  
+**根因**：hard clipping 在 clip 前對全頻訊號（含底噪）做 gain 倍放大；被動 bass 直插 line-in 阻抗不匹配使底噪源頭偏高。  
+**優化方向**（依實作成本排序）：
+
+| 選項 | 成本 | 說明 |
+|------|------|------|
+| 加 noise gate（`\|in\| < noise_thr → out=0`） | 低（`distortion.cpp` 加一個 `if`） | 直接消除底噪；可加 AXI-Lite 參數動態調整門限 |
+| Soft-knee clipping | 中（換 clipping 函式） | 減少截波高諧波，但不解決底噪 |
+| 硬體 DI（demo 佈置） | 不改 IP | 改善阻抗匹配，降低底噪源頭 |
+
+**建議**：先加 noise gate，實作最簡單且效果直接。若新增 `noise_threshold` 為 AXI-Lite 參數，需更新 `INTERFACE.md` 並通知 Claire。
+
+---
+
+## 16. 參考資料
 
 - UCSD FPGA Guitar Pedal 專案報告(ping-pong delay + overdrive on PYNQ-Z2)。
 - PYNQ-Z2 Reference Manual / PYNQ readthedocs(Audio module、base overlay)。

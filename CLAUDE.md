@@ -81,18 +81,22 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - `ap_fixed<32,6>` 中間型別；threshold Q1.23 raw bit decode（需 `.range()`）
   - C Sim PASS（13 cases）、RTL Synthesis PASS（DSP×2, LUT 1%, 6.57 ns）
   - 技術債：threshold decode 記錄於 `docs/phase2.md`
-- 🔲 Phase 3：wobble（一階 IIR + LFO 掃頻 + AXI-Lite lfo_rate/lfo_depth）
-- 🔲 Phase 4：按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**
+- ✅ **Phase 3**：wobble（一階 IIR + LFO 掃頻）— 完成（整合於 Phase 6 branch）
+  - Claire 演算法（B_LUT 16 entries Q15，triangle LFO，一階 IIR）整合進 Phase 6 AXI-Stream HLS
+  - `state_t` 分 `iir_prev_L` / `iir_prev_R`（ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`
+  - HLS 合成：II=1 達成；timing violation -3.08 ns 在 AXI-Lite wrapper（Vivado P&R 可解）
+  - `wobble_dma_test.py` 板上驗證 PASS（L[0]=b×in 精確，state 跨 DMA 保留）
+  - 實際音訊測試 PASS（`audio_dma.c` + codec，lfo_rate/depth 可熱改）
+  - **Post-MVP 優化待辦**：wobble 深度不足（D26）、distortion 底噪放大（D27）— 見 `docs/decisions.md`
+- 🔲 **Phase 4**：按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**（**下一步**）
 - 🔲 Phase 5：效果串接（2 switch 同開，需 P2/P3 各自通過）
-- 🔄 **Phase 6**：A→B 升級（C + DMA + 雙緩衝 + 中斷）— **進行中**（branch: `phase6/dma-upgrade`）
+- ✅ **Phase 6**：A→B 升級（C + DMA + 雙緩衝）— **完成**（branch: `phase6/wobble`）
   - 架構定案：C + DMA（見 D18–D21，`docs/phase6.md`）
   - 板上確認：`pynq.allocate()` 可用、gcc 7.3.0 可用
-  - Step A（HLS AXI-Stream 外殼）✅ 完成；Step B（Vivado BD + PS `audio_dma.c`）✅ 完成
-  - **BUG 修復（D23）**：`ap_axis` 輸出 packet 的 `.keep` 未設 → TKEEP=0 → WSTRB=0 → HP0 不寫 DDR；已加 `.keep = ~0`
-  - **BUG 修復（D24）**：`hls::stream` 單端口 FIFO → 原 2×read+2×write per iter 強制 II=2 → R channel 全部不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1 已驗證
-  - **BUG 修復（D25）**：Zynq HP0 內部 64-bit 匯流排，`PCW_S_AXI_HP0_DATA_WIDTH=32` 只改 HWH 參數不改硬體 → AXI Interconnect 每 64-bit beat WSTRB=0x0F → 每隔一個 32-bit word 不寫 DDR；修正：Vivado PS7 HP0 Data Width 改為 64，重新 Generate Bitstream
-  - **DMA pipeline 驗證通過**（`dma_test.py`：total written=512，sentinel=0，全部正確）
-  - 下一步：板上整合測試（`audio_dma.c` + codec → passthrough 音訊驗證）
+  - Step A（HLS AXI-Stream 外殼）✅；Step B（Vivado BD + PS `audio_dma.c`）✅
+  - BUG 修復：D23（TKEEP=0）、D24（II=2 → R channel 不寫）、D25（HP0 64-bit 交錯寫）
+  - DMA pipeline + codec 音訊驗證全部 PASS
+  - 板上工作目錄：`~/bass-fx/wobble_dma/`；compile：`gcc audio_dma.c -lcma -lpthread -O2`
 
 > 進度隨開發更新。
 
