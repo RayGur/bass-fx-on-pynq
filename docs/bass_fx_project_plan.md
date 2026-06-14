@@ -534,6 +534,22 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 **建議**：先做 `start.sh`（最低成本），長期可考慮把 overlay 載入用 C 的 `/dev/mem` 直接燒 bitstream（有 PYNQ precedent）。
 
+### 14.6 Production cleanup（功能性 TODO 全完成後）
+
+**目標**：將 `audio_dma.c`（及相關 PS 程式）整理成部署版本，移除開發期輔助程式碼。  
+**包含**：
+
+| 項目 | 說明 |
+|------|------|
+| 移除 boot 診斷 print | `[diag:]`、`[phys-verify]`、`[boot]`、`[dma]` 等一次性 log |
+| 移除 `/dev/mem` cross-verify 區塊 | 驗證 cma phys addr 正確性的程式碼，上線後不需要 |
+| 移除 `diag()` / `diag_buf()` 函式 | 純除錯用，production 不呼叫 |
+| 保留必要 log | `[ctrl]` preset 切換 log 可保留（demo 時有助確認操作）；或改 `#ifdef DEBUG` 控制 |
+| 確認 compile flag | `-O2` 保留；考慮是否加 `-DNDEBUG` |
+
+**時機**：所有功能性 TODO（14.1–14.5）完成、音質驗收通過後執行。  
+**注意**：cleanup 前先開新 branch（`release/production` 或 `chore/cleanup`），保留 debug 版 history。
+
 ---
 
 ## 16. 參考資料
