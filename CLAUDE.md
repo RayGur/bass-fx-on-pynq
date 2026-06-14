@@ -88,8 +88,12 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - `wobble_dma_test.py` 板上驗證 PASS（L[0]=b×in 精確，state 跨 DMA 保留）
   - 實際音訊測試 PASS（`audio_dma.c` + codec，lfo_rate/depth 可熱改）
   - **Post-MVP 優化待辦**：wobble 深度不足（D26）、distortion 底噪放大（D27）— 見 `docs/decisions.md`
-- 🔲 **Phase 4**：按鈕單選切換 + AXI-Lite 調參 → **MVP 完成**（**下一步**）
-- 🔲 Phase 5：效果串接（2 switch 同開，需 P2/P3 各自通過）
+- ✅ **Phase 4 + 5**：GPIO 控制迴路（sw/btn/LED/RGB LD4+LD5）+ 效果串接 — **MVP 完成**（branch: `feat/gpio`）
+  - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset
+  - RGB LD4/LD5 顯示 switch 狀態；led[0/1] 顯示 preset 強度
+  - axi_gpio_2（0x4003_0000）新增至 BD；hw_cons.xdc 補 6 pin（port: `rgbleds_tri_o_tri_o`）
+  - **前置**：每次執行前需先 `sudo python3 codec_init.py`（載入 overlay + 初始化 codec）
+  - Post-MVP 待辦：LED 亮度（14.3）、KRK 喇叭 crash（14.4）、啟動整合腳本（14.5）— 見 `docs/bass_fx_project_plan.md`
 - ✅ **Phase 6**：A→B 升級（C + DMA + 雙緩衝）— **完成**（branch: `phase6/wobble`）
   - 架構定案：C + DMA（見 D18–D21，`docs/phase6.md`）
   - 板上確認：`pynq.allocate()` 可用、gcc 7.3.0 可用

@@ -46,8 +46,8 @@ JB62 → line-in → ADAU1761 codec
 | 1 | 最小 passthrough IP | ✅ |
 | 2 | Distortion（hard clip + AXI-Lite threshold/gain） | ✅ |
 | 3 | Wobble（IIR + LFO + AXI-Lite lfo_rate/lfo_depth） | ✅ |
-| 4 | 按鈕切換 + AXI-Lite 調參（MVP） | 🔲 ← 下一步 |
-| 5 | 效果串接 | 🔲 |
+| 4 | 按鈕切換 + AXI-Lite 調參（MVP） | ✅ |
+| 5 | 效果串接（sw[0]+sw[1] 同開） | ✅ |
 | 6 | A→B：DMA + 雙緩衝（必要步驟） | ✅ |
 
 ## 文件
@@ -60,6 +60,7 @@ JB62 → line-in → ADAU1761 codec
 | `docs/phase1.md` | Passthrough IP、codec 初始化繞過 libaudio |
 | `docs/phase2.md` | Distortion 實作、threshold decode 細節 |
 | `docs/phase3.md` | Wobble 實作（IIR + LFO） |
+| `docs/phase4.md` | GPIO 控制迴路、RGB LED、preset 參數組（Phase 4+5） |
 | `docs/phase6.md` | DMA 升級、雙緩衝、AXI-Stream 外殼 |
 | `CLAUDE.md` | Claude Code 開發規則與指引 |
 
@@ -81,8 +82,8 @@ cp vivado/bass_fx/bass_fx.runs/impl_1/bass_fx_bd_wrapper.bit vivado/bass_fx_bd.b
 ### 2. 傳至板子
 
 ```bash
-scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/bass-fx/wobble_dma/
-scp ps/audio_dma.c ps/codec_init.py ps/wobble_dma_test.py xilinx@192.168.2.99:~/bass-fx/wobble_dma/
+scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/bass-fx/gpio/
+scp ps/audio_dma.c ps/codec_init.py xilinx@192.168.2.99:~/bass-fx/gpio/
 ```
 
 ### 3. SSH 進板子
@@ -94,24 +95,31 @@ ssh xilinx@192.168.2.99
 ### 4. 板上編譯
 
 ```bash
-cd ~/bass-fx/wobble_dma
-gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -lpthread -O2 -o audio_dma
+cd ~/bass-fx/gpio
+gcc audio_dma.c -lcma -lpthread -O2 -o audio_dma
 ```
 
 ### 5. 執行
 
-**IIR 行為驗證**（不需 codec，純 DMA + 數值驗證）：
+> ⚠️ **全域前置條件：每次重開機後，執行任何 `audio_dma` 前都必須先跑 `codec_init.py`。**  
+> `audio_dma`（及所有 C 音訊程式）直接以 `/dev/mem` MMIO 存取硬體，不自行載入 bitstream 或初始化 codec。  
+> 跳過此步將在程式啟動時 Bus Error（GPIO / DMA / codec 位址不回應）。  
+> **此限制與 Phase 無關，適用於整個專案所有使用 `audio_dma` 的場景。**
 
 ```bash
-sudo python3 wobble_dma_test.py
-```
+# 【必須先跑】載入 overlay + 初始化 ADAU1761 codec
+sudo python3 codec_init.py
 
-**完整音訊執行**（需先初始化 codec）：
-
-```bash
-sudo python3 codec_init.py   # 載入 overlay + 初始化 ADAU1761
+# 啟動即時音訊處理
 sudo ./audio_dma
 ```
+
+**板上控制**（`audio_dma` 執行中）：
+- `sw[0]`（M20）：distortion on/off → LD4（RGB）亮滅
+- `sw[1]`（M19）：wobble on/off → LD5（RGB）亮滅
+- `btn[0]`（D19）：短按切換 distortion low ↔ high → led[0] 亮滅
+- `btn[1]`（D20）：短按切換 wobble slow ↔ fast → led[1] 亮滅
+- sw[0]+sw[1] 同開 = 效果串接（dist → wobble）
 
 ### 6. 即時調整效果參數（另開終端機）
 

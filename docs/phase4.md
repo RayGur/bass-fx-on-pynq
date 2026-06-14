@@ -127,7 +127,9 @@ static volatile uint32_t *gpio2;   // rgbleds[5:0] output
 
 ## 4. 驗證步驟
 
-1. **編譯** `gcc audio_dma.c -I/usr/include -L/usr/lib -lcma -O2 -o audio_dma`
+> **前置**：執行前需先跑 `codec_init.py`（全域要求，非本 Phase 特有，見 README §5）。
+
+1. **編譯** `gcc audio_dma.c -lcma -lpthread -O2 -o audio_dma`
 2. **啟動** `sudo ./audio_dma`，確認 init log 顯示 dist_en/wobble_en 正確
 3. **sw 驗證**：撥 sw[0]，確認 LD4 亮滅 + 音訊有無 distortion
 4. **btn 驗證**：按 btn[0]，確認 led[0] 翻轉 + distortion 強度可聽到變化

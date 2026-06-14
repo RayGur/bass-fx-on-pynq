@@ -494,6 +494,46 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 **建議**：先加 noise gate，實作最簡單且效果直接。若新增 `noise_threshold` 為 AXI-Lite 參數，需更新 `INTERFACE.md` 並通知 Claire。
 
+### 14.3 RGB LED（LD4/LD5）亮度過高（板上實測，2026-06-14）
+
+**症狀**：LD4/LD5 全彩（R+G+B 三 channel 同亮）太刺眼，demo 環境下不舒適。  
+**根因**：`audio_dma.c` 目前驅動全部三個 channel（`RGBLED_LD4=0x07`，`RGBLED_LD5=0x38`）。  
+**優化方向**：
+
+| 選項 | 成本 | 說明 |
+|------|------|------|
+| 只驅一個 channel（如綠色 bit1/bit4）| 低（改兩個 `#define`，重編譯）| 亮度降至約 1/3，顏色變單色 |
+| 驅兩個 channel | 低 | 亮度降至約 2/3 |
+
+**建議**：先試單 channel（綠），不滿意再調。無需重合成 bitstream。
+
+### 14.4 高 gain + 串接時外接主動式喇叭 crash（板上實測，2026-06-14）
+
+**症狀**：sw[0]+sw[1] 同開、distortion 設 high、大力撥弦，KRK Rokit 5（studio monitor）會保護電路跳；EarPods 不會。  
+**根因**：hard clipping 後 RMS 大幅上升，輸出電平超過 KRK Rokit 5 line in 額定（+4 dBu），觸發保護。EarPods 為被動高阻抗負載，不受影響。  
+**優化方向**（依實作成本排序）：
+
+| 選項 | 成本 | 說明 |
+|------|------|------|
+| 降低 `DIST_GAIN_HIGH` 預設值（12 → 8）| 低（改一個 `#define`，重編譯）| 直接壓低電平，最快 |
+| 在 `audio_loop()` 對 `out_buf` 整體縮放（× 0.5）| 低（純 PS C，不改 HLS）| 全域輸出衰減，對所有效果生效 |
+| 在 HLS 加 output gain 參數 | 中（需重合成 bitstream）| 最靈活，可即時調整 |
+
+**建議**：先降 `DIST_GAIN_HIGH`（PS 端改一行），測試後決定是否需 output gain 參數。
+
+### 14.5 codec_init.py + audio_dma 整合（易用性，2026-06-14）
+
+**症狀**：目前需兩步啟動（先 `sudo python3 codec_init.py`，再 `sudo ./audio_dma`），容易忘記，會造成 Bus Error。  
+**優化方向**：
+
+| 選項 | 成本 | 說明 |
+|------|------|------|
+| Shell wrapper script（`start.sh`）| 低 | 一行 `./start.sh` 依序呼叫兩個程式 |
+| 將 overlay 載入 + codec init 移入 `audio_dma.c`（C + Python C-API 或 system()）| 中 | 單一二進位，但混 Python/C 複雜 |
+| 用 Python 重寫整個 audio loop（pynq + cffi）| 高 | 維護負擔大，不建議 |
+
+**建議**：先做 `start.sh`（最低成本），長期可考慮把 overlay 載入用 C 的 `/dev/mem` 直接燒 bitstream（有 PYNQ precedent）。
+
 ---
 
 ## 16. 參考資料
