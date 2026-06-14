@@ -552,6 +552,21 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 ---
 
+### 14.7 Ground loop 雜訊 + 前置 HPF 優化（或許可做）
+
+**現象**：接上 bass 後有些微底噪；手碰 PYNQ 接地腳與 bass 弦（地）時雜訊消失，判斷為 **ground loop hum**（50/60 Hz 及諧波），與 14.2 distortion 放大雜訊有關聯。
+
+**方向 A — 類比接地（最直接）**：拉一條線連接 PYNQ 機殼地與 bass 導線地，消除 ground loop 本身。Ray 已評估可行。
+
+**方向 B — 數位前置 HPF（輔助優化，順手可做）**：在 `process_sample()` 最前端串接一階 IIR 高通濾波器（Fc ≈ 25–30 Hz），截掉 DC offset 與超低頻雜訊，使 distortion 不會把這段雜訊一起放大。
+- 只需 2 個乘法器（DSP48E1 資源成本極低）
+- bass 最低音（低 E ≈ 41 Hz）基頻影響可忽略
+- 若想更精準打 50/60 Hz：改用二階 IIR notch filter
+
+**優先序**：先試方向 A（一條線）；若底噪仍殘留再考慮方向 B。
+
+---
+
 ## 16. 參考資料
 
 - UCSD FPGA Guitar Pedal 專案報告(ping-pong delay + overdrive on PYNQ-Z2)。
