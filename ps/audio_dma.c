@@ -25,10 +25,13 @@
 #include <libxlnk_cma.h>
 
 // ── Base addresses ────────────────────────────────────────────
-#define CODEC_BASE 0x44A00000UL
-#define DMA_BASE 0x41E00000UL
-#define EFFECT_BASE 0x40020000UL
-#define MAP_SIZE 0x10000UL
+#define CODEC_BASE   0x44A00000UL
+#define DMA_BASE     0x41E00000UL
+#define EFFECT_BASE  0x40020000UL
+#define GPIO0_BASE   0x40000000UL  // sw[1:0] ch1, btn[3:0] ch2 (input)
+#define GPIO1_BASE   0x40010000UL  // led[3:0] (output)
+#define GPIO2_BASE   0x40030000UL  // rgbleds[5:0] LD4+LD5 (output, Phase 4)
+#define MAP_SIZE     0x10000UL
 
 // ── audio_codec_ctrl registers (offset from CODEC_BASE) ──────
 #define CODEC_RX_L 0x00   // R: left  received sample, bits[23:0] = Q1.23
@@ -49,6 +52,17 @@
 #define DMA_CR_RS (1 << 0)   // Run/Stop
 #define DMA_SR_IOC (1 << 12) // IOC_Irq: transfer complete
 
+// ── AXI GPIO register offsets (same for gpio0/1/2) ───────────
+#define GPIO_DATA  0x000  // ch1 data
+#define GPIO_TRI   0x004  // ch1 direction (0=output, 1=input per bit)
+#define GPIO_DATA2 0x008  // ch2 data
+#define GPIO_TRI2  0x00C  // ch2 direction
+
+// RGB LED bit masks (gpio2)
+// bits[2:0] → LD4 (pins L15/G17/N15); bits[5:3] → LD5 (pins G14/L14/M15)
+#define RGBLED_LD4 0x07u
+#define RGBLED_LD5 0x38u
+
 // ── Effect IP (process_sample) AXI-Lite offsets ──────────────
 #define EFFECT_CTRL      0x00 // bit0=AP_START, bit7=AUTO_RESTART
 #define EFFECT_N_SAMPLES 0x10
@@ -59,14 +73,19 @@
 #define EFFECT_LFO_RATE  0x38 // phase increment per L-sample (2^32 = one full LFO cycle)
 #define EFFECT_LFO_DEPTH 0x40 // 0–100 (maps LFO sweep to B_LUT index range)
 
-// ── Default effect parameters (adjust via Python after boot) ─
-#define DEFAULT_DIST_EN   0
-#define DEFAULT_WOBBLE_EN 1
-#define DEFAULT_THRESHOLD ((int)(0.3f * (1 << 23))) // 0.3 full scale
-#define DEFAULT_GAIN      8
-// lfo_rate ≈ 1 Hz sweep at 48 kHz: 2^32 / 48000 ≈ 89478
-#define DEFAULT_LFO_RATE  89478
-#define DEFAULT_LFO_DEPTH 100
+// ── Effect preset parameter tables (Phase 4) ─────────────────
+// Distortion low: gentle clip (threshold 0.5, gain 4)
+// Distortion high: heavy clip (threshold 0.2, gain 12)
+// Wobble slow: 1 Hz sweep; fast: 4 Hz sweep
+// Adjust after board listening test; update docs/INTERFACE.md when changed.
+#define DIST_THRESHOLD_LOW  ((int)(0.5f * (1 << 23)))  // 4194304
+#define DIST_GAIN_LOW       4
+#define DIST_THRESHOLD_HIGH ((int)(0.2f * (1 << 23)))  // 1677722
+#define DIST_GAIN_HIGH      12
+#define WOBBLE_RATE_SLOW    89478   // 1 Hz  (= 1 * 2^32 / 48000)
+#define WOBBLE_DEPTH_SLOW   80
+#define WOBBLE_RATE_FAST    357914  // 4 Hz  (= 4 * 2^32 / 48000)
+#define WOBBLE_DEPTH_FAST   100
 
 // ── Buffer config (non-cacheable = cache coherent with DMA) ──
 #define N_SAMPLES 255
@@ -77,6 +96,17 @@
 static volatile uint32_t *codec;
 static volatile uint32_t *dma;
 static volatile uint32_t *effect;
+static volatile uint32_t *gpio0;  // sw + btn input
+static volatile uint32_t *gpio1;  // led[3:0] output
+static volatile uint32_t *gpio2;  // rgbleds[5:0] output
+
+// ── Control state (Phase 4) ───────────────────────────────────
+static int dist_preset   = 0;  // 0=low, 1=high
+static int wobble_preset = 0;  // 0=slow, 1=fast
+static uint32_t prev_sw  = 0xFF; // force first write on boot
+
+#define DEBOUNCE_COUNT 3  // consecutive polls needed ≈ 3 × 5.33 ms = 16 ms
+static struct { int count; int fired; } btn_db[2]; // [0]=dist, [1]=wobble
 
 static int32_t *in_buf[2], *out_buf[2];
 static uint32_t in_phys[2], out_phys[2];
@@ -138,34 +168,137 @@ static void diag_buf(const char *tag, int32_t *buf)
            tag, buf[0], buf[1], buf[2], buf[3]);
 }
 
+// ── Phase 4: preset application ──────────────────────────────
+static void apply_dist_preset(void)
+{
+    if (dist_preset) {
+        REG_W(effect, EFFECT_THRESHOLD, DIST_THRESHOLD_HIGH);
+        REG_W(effect, EFFECT_GAIN,      DIST_GAIN_HIGH);
+    } else {
+        REG_W(effect, EFFECT_THRESHOLD, DIST_THRESHOLD_LOW);
+        REG_W(effect, EFFECT_GAIN,      DIST_GAIN_LOW);
+    }
+}
+
+static void apply_wobble_preset(void)
+{
+    if (wobble_preset) {
+        REG_W(effect, EFFECT_LFO_RATE,  WOBBLE_RATE_FAST);
+        REG_W(effect, EFFECT_LFO_DEPTH, WOBBLE_DEPTH_FAST);
+    } else {
+        REG_W(effect, EFFECT_LFO_RATE,  WOBBLE_RATE_SLOW);
+        REG_W(effect, EFFECT_LFO_DEPTH, WOBBLE_DEPTH_SLOW);
+    }
+}
+
+static void update_leds(uint32_t sw)
+{
+    // led[0] = dist_preset, led[1] = wobble_preset
+    REG_W(gpio1, GPIO_DATA, (uint32_t)((dist_preset & 1) | ((wobble_preset & 1) << 1)));
+    // LD4 (bits[2:0]) = sw[0], LD5 (bits[5:3]) = sw[1]
+    uint32_t rgb = ((sw & 1) ? RGBLED_LD4 : 0u) | ((sw >> 1) & 1 ? RGBLED_LD5 : 0u);
+    REG_W(gpio2, GPIO_DATA, rgb);
+}
+
+// Called once per audio buffer (~5.33 ms).
+// Reads sw/btn, updates Effect IP and LEDs.
+static void control_poll(void)
+{
+    uint32_t sw  = REG_R(gpio0, GPIO_DATA)  & 0x3u; // sw[1:0]
+    uint32_t btn = REG_R(gpio0, GPIO_DATA2) & 0x3u; // btn[1:0] only
+
+    // Switches → dist_en / wobble_en (write only on change)
+    if (sw != prev_sw) {
+        REG_W(effect, EFFECT_DIST_EN,   sw & 1u);
+        REG_W(effect, EFFECT_WOBBLE_EN, (sw >> 1) & 1u);
+        prev_sw = sw;
+    }
+
+    // Button[0]: distortion preset toggle
+    if (btn & 1u) {
+        if (!btn_db[0].fired && ++btn_db[0].count >= DEBOUNCE_COUNT) {
+            dist_preset ^= 1;
+            apply_dist_preset();
+            btn_db[0].fired = 1;
+            printf("[ctrl] dist preset → %s  (thr=%d gain=%d)\n",
+                   dist_preset ? "HIGH" : "LOW",
+                   dist_preset ? DIST_THRESHOLD_HIGH : DIST_THRESHOLD_LOW,
+                   dist_preset ? DIST_GAIN_HIGH : DIST_GAIN_LOW);
+        }
+    } else {
+        btn_db[0].count = 0;
+        btn_db[0].fired = 0;
+    }
+
+    // Button[1]: wobble preset toggle
+    if ((btn >> 1) & 1u) {
+        if (!btn_db[1].fired && ++btn_db[1].count >= DEBOUNCE_COUNT) {
+            wobble_preset ^= 1;
+            apply_wobble_preset();
+            btn_db[1].fired = 1;
+            printf("[ctrl] wobble preset → %s  (rate=%d depth=%d)\n",
+                   wobble_preset ? "FAST" : "SLOW",
+                   wobble_preset ? WOBBLE_RATE_FAST  : WOBBLE_RATE_SLOW,
+                   wobble_preset ? WOBBLE_DEPTH_FAST : WOBBLE_DEPTH_SLOW);
+        }
+    } else {
+        btn_db[1].count = 0;
+        btn_db[1].fired = 0;
+    }
+
+    update_leds(sw);
+}
+
 // ── Effect IP init ────────────────────────────────────────────
 static void effect_init(void)
 {
+    // Phase 4: read actual switch state to initialise enables correctly
+    uint32_t sw = REG_R(gpio0, GPIO_DATA) & 0x3u;
+    prev_sw = sw;
+
     REG_W(effect, EFFECT_N_SAMPLES, N_SAMPLES);
-    REG_W(effect, EFFECT_DIST_EN,   DEFAULT_DIST_EN);
-    REG_W(effect, EFFECT_WOBBLE_EN, DEFAULT_WOBBLE_EN);
-    REG_W(effect, EFFECT_THRESHOLD, DEFAULT_THRESHOLD);
-    REG_W(effect, EFFECT_GAIN,      DEFAULT_GAIN);
-    REG_W(effect, EFFECT_LFO_RATE,  DEFAULT_LFO_RATE);
-    REG_W(effect, EFFECT_LFO_DEPTH, DEFAULT_LFO_DEPTH);
+    REG_W(effect, EFFECT_DIST_EN,   sw & 1u);
+    REG_W(effect, EFFECT_WOBBLE_EN, (sw >> 1) & 1u);
+
+    // Write preset parameters (dist_preset=0=low, wobble_preset=0=slow)
+    apply_dist_preset();
+    apply_wobble_preset();
+
     // AP_START | AUTO_RESTART: IP restarts after each stream transfer
     REG_W(effect, EFFECT_CTRL, (1 << 7) | (1 << 0));
 
     // Readback: confirm AXI-Lite writes reached the IP
-    uint32_t rb_n = REG_R(effect, EFFECT_N_SAMPLES);
+    uint32_t rb_n   = REG_R(effect, EFFECT_N_SAMPLES);
     uint32_t rb_dis = REG_R(effect, EFFECT_DIST_EN);
     uint32_t rb_ctl = REG_R(effect, EFFECT_CTRL);
-    printf("[init] effect IP: dist_en=%d wobble_en=%d threshold=0x%x gain=%d"
-           "  lfo_rate=%d lfo_depth=%d\n",
-           DEFAULT_DIST_EN, DEFAULT_WOBBLE_EN,
-           DEFAULT_THRESHOLD, DEFAULT_GAIN,
-           DEFAULT_LFO_RATE, DEFAULT_LFO_DEPTH);
+    printf("[init] effect IP: dist_en=%u wobble_en=%u "
+           "threshold=%d gain=%d lfo_rate=%d lfo_depth=%d\n",
+           sw & 1u, (sw >> 1) & 1u,
+           DIST_THRESHOLD_LOW, DIST_GAIN_LOW,
+           WOBBLE_RATE_SLOW, WOBBLE_DEPTH_SLOW);
     printf("[init] effect readback: n_samples=%u dist_en=%u CTRL=0x%08x"
            "  (ap_start=%d auto_rst=%d)\n",
            rb_n, rb_dis, rb_ctl, rb_ctl & 1, (rb_ctl >> 7) & 1);
     if (rb_n != N_SAMPLES)
         printf("[WARN] n_samples readback mismatch! wrote %d got %u\n",
                N_SAMPLES, rb_n);
+}
+
+// ── GPIO init (Phase 4) ───────────────────────────────────────
+static void gpio_init(void)
+{
+    // gpio0: sw(ch1) + btn(ch2) — all input (TRI=1)
+    REG_W(gpio0, GPIO_TRI,  0xFFu);
+    REG_W(gpio0, GPIO_TRI2, 0xFFu);
+    // gpio1: led[3:0] — all output (TRI=0); start with all off
+    REG_W(gpio1, GPIO_TRI,  0x0u);
+    REG_W(gpio1, GPIO_DATA, 0x0u);
+    // gpio2: rgbleds[5:0] — all output (TRI=0); start with all off
+    REG_W(gpio2, GPIO_TRI,  0x0u);
+    REG_W(gpio2, GPIO_DATA, 0x0u);
+    printf("[gpio_init] sw=0x%x btn=0x%x\n",
+           REG_R(gpio0, GPIO_DATA) & 0x3u,
+           REG_R(gpio0, GPIO_DATA2) & 0xFu);
 }
 
 // ── DMA init (hard reset + run both channels) ────────────────
@@ -303,6 +436,9 @@ static void audio_loop(void)
         // ── DMA: process in_buf[nxt] → out_buf[nxt] (~5 μs) ─
         dma_transfer(in_phys[nxt], out_phys[nxt]);
 
+        // ── GPIO: read sw/btn, update effect enables + LEDs ──
+        control_poll();
+
         cur = nxt;
     }
 }
@@ -317,14 +453,18 @@ int main(void)
         return 1;
     }
 
-    codec = mmap_periph(fd, CODEC_BASE);
-    dma = mmap_periph(fd, DMA_BASE);
+    codec  = mmap_periph(fd, CODEC_BASE);
+    dma    = mmap_periph(fd, DMA_BASE);
     effect = mmap_periph(fd, EFFECT_BASE);
+    gpio0  = mmap_periph(fd, GPIO0_BASE);
+    gpio1  = mmap_periph(fd, GPIO1_BASE);
+    gpio2  = mmap_periph(fd, GPIO2_BASE);
     close(fd);
 
     printf("[init] peripherals mapped\n");
 
     init_buffers();
+    gpio_init();
 
     // ── Physical address cross-verify (one-shot) ─────────────────
     // Test: write via virtual addr, read back via /dev/mem at reported phys addr.

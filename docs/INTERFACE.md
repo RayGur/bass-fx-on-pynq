@@ -194,6 +194,7 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 |---------|-------------|------|
 | `axi_gpio_0` | `0x4000_0000` | GPIO=sw[1:0]（input），GPIO2=btn[3:0]（input） |
 | `axi_gpio_1` | `0x4001_0000` | GPIO=led[3:0]（output） |
+| `axi_gpio_2` | `0x4003_0000` | GPIO=rgbleds[5:0]（output，Phase 4 新增）|
 
 > AXI GPIO 暫存器 offset：DATA=0x000（ch1），DATA2=0x008（ch2），TRI=0x004，TRI2=0x00C
 
@@ -224,26 +225,36 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | btn[2] | L20 | 保留未用 |
 | btn[3] | L19 | 保留未用 |
 
-### 輸出:LED(狀態顯示)
+### 輸出:LED(狀態顯示)（Phase 4 定案）✅
 
-| 訊號 | PACKAGE_PIN | 功能 |
-|------|-------------|------|
-| led[0] | R14 | distortion 狀態:亮 = high,暗 = low |
-| led[1] | P14 | wobble 狀態:亮 = high,暗 = low |
-| led[2] | N16 | 保留未用 |
-| led[3] | M14 | 保留未用 |
+| 訊號 | IP | PACKAGE_PIN | 功能 |
+|------|----|-------------|------|
+| led[0] | gpio_1 | R14 | btn[0] distortion preset：high=亮，low=滅 |
+| led[1] | gpio_1 | P14 | btn[1] wobble preset：high=亮，low=滅 |
+| led[2] | gpio_1 | N16 | 保留未用 |
+| led[3] | gpio_1 | M14 | 保留未用 |
+| rgbleds[2:0] | gpio_2 | L15, G17, N15 | LD4：sw[0] distortion on/off（開=全亮，關=滅）|
+| rgbleds[5:3] | gpio_2 | G14, L14, M15 | LD5：sw[1] wobble on/off（開=全亮，關=滅）|
+
+### Preset 參數組（Phase 4 初訂，上板後依聽感調整）
+
+| 效果 | Preset | threshold | gain | lfo_rate | lfo_depth |
+|------|--------|-----------|------|----------|-----------|
+| distortion | **low** | `0.5 × (1<<23)` = 4194304 | 4 | — | — |
+| distortion | **high** | `0.2 × (1<<23)` = 1677722 | 12 | — | — |
+| wobble | **slow** | — | — | 89478（1 Hz）| 80 |
+| wobble | **fast** | — | — | 357914（4 Hz）| 100 |
 
 ### 按鈕 toggle 行為(PS 端軟體實作)
 
 - **短按即翻轉**:偵測「從未按 → 按下」的上升邊緣,翻轉對應 state,寫對應參數(low/high 值)並更新 LED。不加「按住 N 秒」條件(demo 為刻意操作,無誤觸顧慮)。
-- **需處理**:邊緣偵測(記住上次值,只在邊緣翻轉)+ debounce(輪詢間隔或連續 N 次一致才認定,避免機械抖動造成一按多跳)。
+- **debounce**：連續 3 次輪詢確認（每次 ≈ 5.33 ms，共 ≈ 16 ms），按住期間只觸發一次翻轉，放開後允許下次按壓。
 - 全部在 PS 端輪詢迴圈處理,不佔 PL 邏輯。
 
 ### 備註
 
-- base overlay 中 LED port 名為 `leds_4bits_tri_o[0..3]`;自訂 AXI GPIO output 時 port 名須與 .xdc 的 `get_ports` 一致。
-- 普通 4 顆 LED 即足夠;RGB LED(`rgbleds_6bits_tri_o`)不使用。
-- low/high 的具體參數數值(threshold/gain/lfo_rate/lfo_depth 的兩組值)待 Phase 4 調出好聽範圍後填入。
+- gpio_1 port 名 `led_tri_io[3:0]`（XDC 已有）；gpio_2 port 名 `rgbleds_tri_o[5:0]`（Phase 4 新增至 hw_cons.xdc）。
+- rgb bit[2:0] → LD4（L15/G17/N15）；bit[5:3] → LD5（G14/L14/M15）；來源：PYNQ-Z2 官方 base.xdc，無 pin 衝突。
 
 ---
 
@@ -259,4 +270,5 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 6 BUG D23 | AXI-Stream 輸出 packet 必須顯式設 `.keep = ~0`；TKEEP=0 → WSTRB=0 → HP0 不寫 DDR（見 D23）；已修入 `process_sample.cpp` |
 | Phase 6 BUG D24 | `hls::stream` 單端口 FIFO：原 2×read+2×write per iter 強制 II=2 → R channel 所有 sample 不寫 DDR；改 `n_samples×2` iters 每次 1 read+1 write → II=1（見 D24）；已修入 `process_sample.cpp`，重新合成 Final II=1 確認 ✅ |
 | Phase 6 BUG D25 | Zynq HP0 內部 64-bit 匯流排；`PCW_S_AXI_HP0_DATA_WIDTH=32` 只改 HWH 不改硬體 → WSTRB=0x0F per 64-bit beat → 每隔一個 32-bit word 不寫 DDR；修正：Vivado PS7 HP0 Data Width 改為 64，重建 bitstream（見 D25）；板上驗證 total written=512 ✅ |
+| Phase 4 | LED 對應定案（gpio_1 led[0/1] = btn preset；gpio_2 rgbleds = sw on/off）；Preset 參數組初訂；axi_gpio_2 base address 定案（0x4003_0000）；RGB LED pins 確認（L15/G17/N15/G14/L14/M15，無衝突）|
 | Phase 3 | `process_sample()` 完整簽章定案；`state_t` 欄位定案（lfo_phase + iir_prev_L/R, ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`；wobble 參數編碼定案（lfo_rate=相位增量，lfo_depth=0–100）；中間運算型別 `ap_fixed<32,2>` 定案；板上音訊驗證 PASS（2026-06-14）|
