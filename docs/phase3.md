@@ -1,19 +1,22 @@
 # Phase 3 — Wobble 實作計畫書
 
+> **狀態：✅ 完成**（2026-06-14，整合於 Phase 6 DMA branch `phase6/wobble`）  
+> Exit Criteria 全數通過；板上音訊驗證 PASS；`wobble_dma_test.py` IIR 行為驗證 PASS。  
+> Post-MVP 優化待辦：wobble 深度不足（D26）、distortion 底噪（D27）— 見 `docs/decisions.md`。
+
 > **目標**：第二個可聽效果。一階 IIR lowpass + LFO 掃頻，產生「哇嗚」週期性音色。  
-> **負責人**：Claire  
+> **負責人**：Claire（演算法）、Ray（Phase 6 整合）  
 > **前置條件**：
 > - Phase 1 Exit Criteria 通過（Effect IP 路徑通）
 > - Phase 2 不需先完成（wobble 路徑獨立，可平行）
 > - **動 `effect_ip.h` 前先告知 Ray**（state_t 是共用 header）
 >
 > **Exit Criteria**：
-> - 能聽到週期性音色掃動（「哇嗚」感）
-> - 調 `lfo_rate` 能聽到掃動快慢明顯變化
-> - 調 `lfo_depth` 能聽到效果深淺變化
-> - 無 click 聲（rate 改變時相位平滑接續）
-> - 無溢位、不爆音
-> - HLS C Simulation testbench 通過
+> - ✅ 能聽到週期性音色掃動（「哇嗚」感）
+> - ✅ 調 `lfo_rate` 能聽到掃動快慢明顯變化（AXI-Lite 熱改驗證）
+> - ✅ 調 `lfo_depth` 能聽到效果深淺變化
+> - ✅ 無溢位、不爆音（clamp 生效，wobble_dma_test.py bounds check PASS）
+> - ✅ HLS C Simulation testbench 通過（IIR 收斂、bounded output、state 跨呼叫保留）
 
 ---
 
@@ -284,3 +287,57 @@ def enable_wobble(on=True):
 | click 聲 | lfo_step 突變（PS 突然改 rate） | Step 本身平滑（相位連續）；lfo_step 改變時不重置 lfo_phase |
 | state 沒更新 | `iir_prev` 忘記在每 sample 結束時賦值 | 確認 `state->iir_prev = out` 在每次呼叫結尾 |
 | lfo_depth=0 異常 | `depth_scaled=0 → lut_idx=0 → b=最小`（非 passthrough） | depth=0 時在 PS 端直接 disable wobble_en；IP 內不需要特判 |
+
+---
+
+## 11. ⚠️ Loop 結構變更（Phase 6 修正，Claire 實作前必讀）
+
+**背景**：Phase 6 除錯時發現 HLS PIPELINE 限制 —— `hls::stream` 是單端口 FIFO，每個 clock 只能 1 read 或 1 write。原先每個 loop iteration 做 2 reads + 2 writes（L/R 成對），HLS 強制 II=2，造成 S2MM 跳寫，R samples 全數丟失。
+
+**現行 `process_sample.cpp` loop 結構（已改）**：
+```c
+// n_samples = stereo pairs（PS 仍寫 256，語義不變）
+for (int i = 0; i < n_samples * 2; i++) {
+#pragma HLS PIPELINE II=1
+    audio_pkt_t pkt = s_in.read();   // 一次 1 read
+    // process one sample...
+    s_out.write(out_pkt);             // 一次 1 write
+}
+// L 在 i%2==0，R 在 i%2==1
+```
+
+**對 wobble 實作的影響**：
+
+1. **`state_t.iir_prev` 需分成 L/R**  
+   原設計的 `iir_prev` 是 L/R 共用，現在 L 和 R 各自獨立進 `apply_wobble`，需要分開的 IIR 狀態。  
+   建議改為：
+   ```c
+   typedef struct {
+       ap_uint<32>  lfo_phase;
+       sample_t     iir_prev_l;   // L channel IIR 前一輸出
+       sample_t     iir_prev_r;   // R channel IIR 前一輸出
+   } state_t;
+   ```
+   > 更動 `state_t` 前先通知 Ray 更新 `effect_ip.h`。
+
+2. **LFO phase 只在 L sample（i%2==0）推進**  
+   每個 stereo pair 應有一個 LFO step，不能 L 和 R 各推進一次（頻率加倍）。  
+   `apply_wobble` 加入 `bool is_l` 參數，`is_l=false` 時跳過 `lfo_phase +=`，只做 IIR：
+   ```c
+   sample_t apply_wobble(sample_t in, param_t lfo_step, param_t lfo_depth,
+                         state_t *state, bool is_l) {
+       if (is_l) state->lfo_phase += (ap_uint<32>)lfo_step;  // 只 L 推進
+       // b 查表用同一個 lfo_phase（L 設好，R 直接用）
+       ...
+       sample_t *iir_prev = is_l ? &state->iir_prev_l : &state->iir_prev_r;
+       // IIR 計算用對應 channel 的 state
+   }
+   ```
+
+3. **呼叫點（`process_sample.cpp`）**：
+   ```c
+   bool is_l = (i % 2 == 0);
+   if (wobble_en) out_s = apply_wobble(out_s, lfo_rate, lfo_depth, &state, is_l);
+   ```
+
+**結論**：`apply_wobble` 的函式簽章需加 `bool is_l`；`state_t` 的 `iir_prev` 分成 `iir_prev_l` + `iir_prev_r`。兩者都要在 Phase 3 開始前與 Ray 確認。

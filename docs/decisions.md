@@ -246,9 +246,248 @@
 
 ---
 
+## D18. Phase 6 傳輸架構：C + DMA
+
+- **背景**：Python PIO 音質不可接受（D15）；Phase 6 需決定升級路線。
+- **選項**：
+  - A) C PIO：PS C 程式輪詢 `audio_codec_ctrl`，逐 sample 透過 AXI-Lite 送 Effect IP。C loop < 1 μs/次，48kHz 完全跟得上。但沒有展示 DMA 技術，CPU 仍被佔用。
+  - B) C + DMA：PS C 程式輪詢 codec 填 buffer，DMA 批次送 Effect IP（AXI-Stream），DMA 收回結果，PS 寫回 codec。CPU 解放；展示 DMA 技術。
+  - C) Full hardware stream：換 I2S IP（有 AXI-Stream 輸出），codec → AXI-Stream → Effect IP → AXI-Stream → codec，PS 完全不碰音訊資料。
+- **決定**：選 B（C + DMA）。
+- **理由**：
+  - A 可行但無法展示 DMA（專案技術亮點之一，project_plan.md 第 6.3 節）。
+  - B 對既有 `audio_codec_ctrl` 零改動（已驗證可用），codec 側 C 輪詢足夠快，DMA 只負責 Effect IP 側的批次搬運。
+  - C 需更換 `audio_codec_ctrl`，I2S timing 在 Phase 1 已踩坑（D12），風險過高；Vivado 2022.2 IP Catalog 中對應 IP 未經確認。
+  - 板上已驗證：`pynq.allocate()` 可用（paddr=0x18049000，64-byte 對齊），`flush()`/`invalidate()` 方法存在，gcc 7.3.0 可用。
+- **架構圖**：
+  ```
+  codec ←I2S→ audio_codec_ctrl ←MMIO→ PS C 輪詢
+                                            ↕ DRAM buffer (ping-pong)
+                                        AXI DMA (MM2S / S2MM)
+                                            ↕ AXI-Stream
+                                    [AXI Stream FIFO]（解耦時序）
+                                            ↕ AXI-Stream
+                                        Effect IP (HLS)
+                                            ↕ AXI-Lite（參數，不動）
+  ```
+- **參考**：
+  - PYNQ DMA 官方文件：https://pynq.readthedocs.io/en/v2.5/pynq_libraries/dma.html
+  - cathalmccabe PYNQ DMA Tutorial Part 1：https://discuss.pynq.io/t/tutorial-pynq-dma-part-1-hardware-design/3133
+  - Audio-Lab-PYNQ（PYNQ-Z2 音訊 DMA 參考專案）：https://github.com/cramsay/Audio-Lab-PYNQ
+
+---
+
+## D19. Phase 6 DMA buffer 大小：256 samples
+
+- **背景**：buffer 越小延遲越低，但 DMA overhead 比例越高；越大則反之。
+- **決定**：256 samples/buffer（每個 stereo frame，含 L+R 各 256 words，共 512 × 4 = 2048 bytes per DMA）。
+- **理由**：
+  - 延遲 = 256 / 48000 ≈ 5.3 ms，遠低於 100 ms 目標（project_plan.md 第 7.1 節）。
+  - 音訊 DSP 社群對 48kHz 系統的推薦折衷點為 256–512 samples。
+  - 2048 bytes 遠大於 DMA descriptor 最小粒度，burst 效率高。
+- **可調整**：實測若出現 underrun 可增至 512（10.7 ms），仍在目標內。
+- **參考**：
+  - Audio DSP buffer sizing practice：https://audiodsplab.wordpress.com/ping-pong-buffer-audio-stream/
+  - PYNQ Workshop Session 4 DMA：https://github.com/Xilinx/PYNQ_Workshop/blob/master/Session_4/6_dma_tutorial.ipynb
+
+---
+
+## D20. Phase 6 跨 buffer 狀態：HLS static 變數
+
+- **背景**：IIR 前一輸出（wobble）和 LFO 相位（wobble）需要跨 DMA buffer 保留。Phase 6 前這些在 `state_t` 裡由 AXI-Lite 從 PS 傳入，DMA 模式下每 buffer 讀寫一次 AXI-Lite 的成本可接受，但 HLS static 更乾淨。
+- **選項**：
+  - A) HLS `static state_t state = {0}`：在 HLS top function 內宣告，自動跨 call 保留，合成成 register。
+  - B) PS 每次 buffer 前後透過 AXI-Lite 讀回 / 寫入 state。
+- **決定**：選 A（static）。
+- **理由**：static 合成成暫存器（非 BRAM），HLS 已知支援此模式，且 IIR/LFO 狀態本就屬於 IP 內部狀態，不需 PS 介入。Phase 6 後 AXI-Lite `state` port 可移除。
+- **注意**：static 在 HLS 模擬中初始化一次；RTL 中 reset 行為需確認（通常 ap_rst 時清零）。
+- **參考**：
+  - Hackaday IIR Audio Processing with static state：https://hackaday.io/project/166515-audio-processing-with-the-snickerdoodle/details
+  - Xilinx HLS UG1399（static variable synthesis）：https://docs.amd.com/r/en-US/ug1399-vitis-hls/How-AXI4-Stream-is-Implemented
+
+---
+
+## D21. Phase 6 兩個已知關鍵陷阱
+
+- **陷阱 1：TLAST 未設 → DMA recvchannel.wait() 永遠 hang**
+  - 根本原因：AXI DMA S2MM channel 等待 TLAST 訊號才認定 packet 結束；HLS IP 若沒在最後一個 sample 設 `pkt.last = 1`，DMA 永遠不知道 packet 結束，程式卡死。
+  - 解法：HLS stream loop 在 `i == n_samples - 1` 時設 `pkt.last = 1`，其餘設 0。
+  - 來源：Element14 Vitis HLS + DMA Training Part 2：https://community.element14.com/technologies/fpga-group/b/blog/posts/pynq-and-zynq-the-vitis-hls-accelerator-with-dma-training---part-2-add-the-accelerated-ip-to-a-vivado-design
+
+- **陷阱 2：HP port 無 cache coherency → 資料讀寫錯亂**
+  - 根本原因：Zynq-7000 HP port 不自動同步 CPU cache，PS 寫入 buffer 後 PL 可能讀到 stale cache，PL 寫完 PS 可能讀到 stale cache。
+  - 解法：
+    - PS 寫完 input buffer 後、DMA 讀之前：`in_buf.flush()`
+    - DMA 寫完 output buffer 後、PS 讀之前：`out_buf.invalidate()`
+  - `pynq.allocate()` 回傳的 `PynqBuffer` 物件有這兩個方法，直接呼叫。
+  - 來源：PYNQ discuss cache coherency：https://discuss.pynq.io/t/cache-coherency-in-pynq-image-using-pynq-z2-board-ethernet-bring-up/4078
+
+---
+
+## D22. Phase 6 PS 端 CMA buffer 分配與 cache 管理：`libcma.so` ✅
+
+- **背景**：C + DMA 架構下，PS C 程式需要（1）分配 DMA-safe（physically contiguous）buffer，（2）在 DMA 傳輸前後做 cache flush / invalidate（HP port 無 hardware coherency，見 D21）。Python 透過 `pynq.allocate()` 解決，但 C 程式不能直接呼叫 Python API。
+- **決定**：使用板上已有的 **`libcma.so`**（xlnk 的 C userspace wrapper）。
+- **調查結論**：
+  - **XRT**：**不支援 PYNQ-Z2（Zynq-7000）**。XRT 的 Zynq 支援指 ZynqMP（UltraScale+, Cortex-A53），與 Zynq-7000（Cortex-A9）無關。官方 maintainer Cathal McCabe 明確確認（https://discuss.pynq.io/t/xrt-on-pynq-z2/2950）。「xlnk 被 XRT 取代」在 Z2 上**不適用**。
+  - **xlnk / libcma.so**：xlnk kernel driver 在 PYNQ 2.5 仍然存在且可用（Python 層面 deprecated，但 kernel driver 未移除）。Xilinx 提供 `libcma.so` 作為 C userspace wrapper，**已預裝於 PYNQ 2.5**（`/usr/lib/libcma.so`、`/usr/include/libxlnk_cma.h`）。在 Cortex-A9 上，`cma_flush_cache` / `cma_invalidate_cache` 底層呼叫 xlnk kernel driver 的 `xlnkFlushCache` / `xlnkInvalidateCache`，提供完整 cache coherency。PYNQ 2.5 + PYNQ-Z2 上社群確認可用（需 sudo）。
+  - **udmabuf**：需 cross-compile（板上缺 `modpost` binary，`/bin/sh: scripts/mod/modpost: not found`），沒有 `4.19.0-xilinx-v2019.1` 的預編譯 `.ko`，且 `libcma.so` 已提供等效功能，**不值得繼續追**。
+  - **ACP port**：hardware coherent，不需 software cache ops，但需 Vivado BD 額外設定 AxCACHE（接 Constant IP = `0b0011`），改動量較大，保留為備選。
+- **C API**（編譯：`gcc ... -I/usr/include -L/usr/lib -lcma -lpthread`，需 sudo）：
+  ```c
+  #include <libxlnk_cma.h>
+  void     *buf  = cma_alloc(2048, 1);           // 分配 CMA buffer（cacheable）
+  uint32_t  phys = cma_get_phy_addr(buf);        // 取實體位址（給 DMA 暫存器用）
+  cma_flush_cache(buf, phys, 2048);              // DMA TX 前：PS→PL flush
+  cma_invalidate_cache(buf, phys, 2048);         // DMA RX 後：PL→PS invalidate
+  cma_free(buf);
+  ```
+- **待確認（板上）**：`ls -la /usr/lib/libcma.so /usr/include/libxlnk_cma.h`
+- **參考**：
+  - libxlnk_cma.h：https://github.com/Xilinx/PYNQ/blob/master/sdbuild/packages/libsds/libcma/libxlnk_cma.h
+  - pynqlib.c（flush/invalidate 實作）：https://github.com/Xilinx/PYNQ/blob/master/sdbuild/packages/libsds/libcma/pynqlib.c
+  - XRT on PYNQ-Z2（maintainer 確認不支援）：https://discuss.pynq.io/t/xrt-on-pynq-z2/2950
+  - libcma.so in C++ on PYNQ-Z2（社群確認）：https://discuss.pynq.io/t/a-problem-on-libcma-so-in-c/959
+  - udmabuf modpost 問題：https://github.com/ikwzm/udmabuf/issues/19
+
+---
+
+## D23. Phase 6 除錯：TKEEP=0 → S2MM 不寫 DDR
+
+- **背景**：Phase 6 DMA 接線完成後，S2MM 呈現「IOC 正常 fire、S2MM_SR LEN=0、無 AXI 錯誤，但 `out_buf` 內容永遠是初始化哨兵值（0x12345678）」。透過 `/dev/mem` 直讀實體位址確認是 DDR 本身未被寫入，排除 cache 問題。
+- **排除過的根因**：
+  - T1 cache（`cma_alloc(size, 0)` non-cacheable；`/dev/mem` 直讀仍是哨兵）
+  - T2 實體位址錯誤（雙向驗證通過）
+  - T3 HP0 寬度不匹配（從 64-bit 改 32-bit，結果相同）
+  - T4 BD 連線遺漏（重新 export TCL 確認 `axis_data_fifo_1` 連線正確）
+  - T5 AXI-Lite offset 錯誤（對照 `xprocess_sample_hw.h` 確認全部正確）
+  - T6 Effect IP 未運行（若 `s_out` 空，S2MM 會 hang 而非完成；IOC 能 fire 代表 IP 有輸出）
+- **根本原因**：`process_sample.cpp` 的輸出 packet 建構：
+  ```cpp
+  audio_pkt_t out_l_pkt;
+  out_l_pkt.data = 0;
+  out_l_pkt.data.range(23, 0) = out_l.range(23, 0);
+  // out_l_pkt.keep 未設 → HLS 合成後為 0
+  out_l_pkt.last = 0;
+  ```
+  `ap_axis<32,0,0,0>` 的 `.keep`（4-bit）若不顯式設值，Vitis HLS 合成後在輸出 TKEEP 線預設驅動 0。AXI DMA 內部的 DataMover IP 將 TKEEP 映射到 AXI4 WSTRB；WSTRB=0 代表所有 byte enable 無效 → Zynq HP0 接受交易（BRESP=OKAY，S2MM 認為成功，IOC fire），但不寫入 DDR 任何位元組。
+- **決定**：在每個輸出 packet 建構後立即設 `out_l_pkt.keep = ~0`（`out_r_pkt.keep = ~0`），確保 TKEEP=0xF（32-bit stream 的 4 個 byte lane 全有效）。
+- **修正位置**：`hls/effect_ip/process_sample.cpp`，`process_sample()` top function 的 stream loop 內。
+- **注意**：此 bug 無法被以下機制偵測：
+  - HLS C Sim（sim 直接讀 `.data`，不走 DMA 硬體）
+  - `validate_bd_design`（只驗連線，不驗 HLS 內部）
+  - DMA 錯誤旗標（S2MM_SR 無 error bits，AXI 有正常 BRESP）
+- **影響**：需重新 HLS 合成 → Vivado Refresh IP → Generate Bitstream → 重新上板。
+- **參考**：
+  - Xilinx AXI DataMover PG022：TKEEP → WSTRB 映射說明
+  - UG1399 ap_axis 說明：.keep 欄位預設行為
+
+---
+
+## D24. Phase 6 除錯：HLS loop II=2 → S2MM 跳寫，R channel 不寫 DDR
+
+- **背景**：D23 修復 TKEEP 後，`out_buf` 開始被寫入，但呈現**完美交錯 pattern**：偶數 index（L samples）寫入正確，奇數 index（R samples）永遠保持哨兵值。左耳可聽到 passthrough，右耳爆音。
+- **排除過的根因**：
+  - T1 DMA/FIFO/HP0 data width（hwh 確認全部 32-bit）
+  - T2 TSTRB=0（加 `.strb = ~0` 後重建 bitstream，pattern 不變）
+  - T3 AXI Interconnect 64-bit upsize（XBAR_DATA_WIDTH=32，排除）
+  - T4 cache（`/dev/mem` 直讀仍為哨兵，確認 DDR 本身未寫入）
+- **根本原因**：`hls::stream` 是**單端口 FIFO**，每個 clock 最多一次 read 或一次 write。原 loop body：
+  ```cpp
+  for (int i = 0; i < n_samples; i++) {
+  #pragma HLS PIPELINE II=1
+      s_in.read();   // read 1
+      s_in.read();   // read 2  ← 同一 FIFO 衝突
+      ...
+      s_out.write(out_l_pkt);  // write 1
+      s_out.write(out_r_pkt);  // write 2  ← 同一 FIFO 衝突
+  }
+  ```
+  HLS 強制 II=2（csynth.rpt `Issue Type: II, Interval: 2`）。AXI DMA S2MM store-and-forward 模式下，II=2 的輸出讓每隔一個 valid slot 才對應到 R write，R samples 的時序不被 S2MM 接收，造成 R 全數不寫 DDR。  
+  （已驗：Xilinx UG1448 定義此為 "interface contention (intra-iteration)"；UG1399 確認 hls::stream 單端口限制。）
+- **決定**：loop 改為 `n_samples * 2` 次迭代，每次 1 read + 1 write，L/R 以 `i % 2` 區分：
+  ```cpp
+  for (int i = 0; i < n_samples * 2; i++) {
+  #pragma HLS PIPELINE II=1   // 現在可達 II=1
+      audio_pkt_t pkt = s_in.read();
+      // process one sample...
+      s_out.write(out_pkt);
+  }
+  ```
+  `n_samples` 語義不變（stereo pairs），PS 仍寫 256，DMA buffer size 不變（2048 bytes）。
+- **修正位置**：`hls/effect_ip/process_sample.cpp`，`process_sample()` top function。
+- **Phase 3 連動**：`apply_wobble` 需加 `bool is_l` 參數（LFO phase 只在 L 推進）；`state_t.iir_prev` 需分成 `iir_prev_l` / `iir_prev_r`。見 `docs/phase3.md §11`。
+- **注意**：此 bug 無法被 HLS C Sim 偵測（sim 不走 DMA 硬體）。
+- **影響**：需重新 HLS 合成 → Vivado Refresh IP → Generate Bitstream → 重新上板。
+
+---
+
+## D25. Phase 6 除錯：HP0 data width 32-bit → 交錯寫入 pattern（S2MM 每隔一個 word 不寫 DDR）
+
+- **背景**：D24 修復 per-sample loop（II=1）後，`dma_test.py` 獨立測試（N=256，in_buf=i×100，sentinel=0xAAAAAAAA）仍然出現：
+  ```
+  out_buf[:8] = [0, 0xAAAAAAAA, 200, 0xAAAAAAAA, 400, ...]
+  total written=256  sentinel=256  (expected written=512)
+  ```
+  偶數 index 寫入正確（且值等於 `in_buf[even]`，不是 `in_buf[odd]`），奇數 index 永遠是 sentinel。
+- **關鍵觀察**：
+  - written 的值是 `in_buf[0], in_buf[2], in_buf[4]`...（**8-byte stride**，不是 4-byte），代表 S2MM 每次以 64-bit beat 寫入，但只有低 32-bit 有 WSTRB，高 32-bit 全跳過。
+  - MM2S 側亦相同：從 DDR 讀進 HLS 的是 `in_buf[0], in_buf[2]...`，所以輸出也是每隔一個值。
+  - 用 Python `dma_test.py`（非 `audio_dma.c`）獨立驗證，排除 PS C 程式問題。
+- **排除的根因**：
+  - HLS RTL 已讀過：`TKEEP` 硬接線 `4'd15`，`TVALID` 對全部 510 次 iteration 皆 fire。RTL 清潔，無 HLS 層問題。
+  - D23（TKEEP=0）：已修正並驗證（synthesis report 確認 TKEEP hardwired）。
+  - D24（II=2）：已修正，Final II=1 在 csynth.rpt 確認；但硬體仍失敗，排除為充分條件。
+  - cache 問題：non-cacheable CMA 和 explicit invalidate 兩種方式皆出現相同 pattern。
+  - FIFO 溢出：N=255 < FIFO_DEPTH=512，同樣 pattern。
+  - AXI-Lite 位址或參數設定：各項 readback 驗證正確。
+- **根本原因**：Zynq-7000 的 S_AXI_HP port 內部匯流排**實際上是 64-bit**，即使 `PCW_S_AXI_HP0_DATA_WIDTH=32` 的參數也不改變底層硬體寬度。  
+  當 HWH/PS 設 32-bit 時，AXI Interconnect 與 HP0 之間的接口以 64-bit 運作，每個 64-bit beat 只有低 32-bit 有效 WSTRB（=0x0F），高 32-bit WSTRB=0x0（不寫 DDR）。S2MM 每 64-bit beat 只寫一個 32-bit word，造成 8-byte stride、每隔一個 slot 空白的 pattern。MM2S 讀取亦相同（每次讀取 64-bit 但只傳 32-bit 給 DMA，跳過另一個 word）。
+- **決定**：在 Vivado PS7 Customization 將 `S AXI HP0 Interface Data Width` 從 32 改為 **64**，重新 Validate Design + Generate Bitstream。
+- **修改位置**：Vivado Block Design → double-click `processing_system7_0` → PS-PL Configuration → HP Slave AXI Interface → S AXI HP0 Interface → Data Width = 64 → Validate（F6）→ Generate Bitstream。
+- **驗證**（`dma_test.py` 重跑）：
+  ```
+  out_buf[:8] = [0, 100, 200, 300, 400, 500, 600, 700]
+  total written=512  sentinel=0  (expected written=512)
+  ```
+  全部 512 個 word 正確寫入。
+- **附注 1**：`LEN_rem=2048`（S2MM 完成後 LENGTH 暫存器讀回 2048）是 Xilinx AXI DMA direct-register mode 的正常行為；LEN 暫存器讀回 programmed value，不倒數，可忽略。
+- **附注 2**：先前已有 `bass_fx_bd_hp64.bit`（舊版 build，未含 D24 fix），測試時顯示 `total written=0`。懷疑是舊 BD 有其他 interconnect 配置問題。**正確做法是從乾淨的 bass_fx_bd BD 出發，在 PS7 改 HP0 width 後重新 Generate Bitstream**，而非直接使用舊 hp64 檔案。
+- **影響範圍**：DMA S2MM + MM2S 兩條路徑皆受惠；`audio_dma.c` 和 `dma_test.py` 不需改動。
+- **參考**：Zynq-7000 TRM（UG585）§11.2 AXI Slave Port（HP）說明；Xilinx forum 討論 HP port 實際寬度 vs. PCW 參數的差異。
+
+---
+
+## D26. 板上實測：wobble 效果深度不足（Post-MVP 優化待辦）
+
+- **背景**：Phase 3 wobble 整合進 Phase 6 DMA 架構後（2026-06-14），接 ADAU1761 codec + bass 實測，wobble 掃動效果太細微，與 distortion 串接時尤為明顯。
+- **根本原因**：
+  1. **一階 IIR（6 dB/oct）rolloff 太緩**：低通濾波器頻率響應不夠陡，截止頻率前後音量差異不明顯，bass 低頻基音（40–400 Hz）幾乎不受影響。
+  2. **B_LUT 掃動範圍**（b ≈ 0.026–0.704，約 200 Hz–10 kHz）集中在中高頻，對 bass 基音效果有限。
+  3. **與 distortion 串接時**：distortion 產生的諧波被 wobble 低通削減，但 wobble 本身對基音的調變已很弱，整體效果不明顯。
+- **後續優化選項（Post-MVP）**：
+  - A）升 2nd-order IIR（12 dB/oct）：效果更明顯，但需增加 HLS 資源（loop-carried state 距離加深，需確認 II 仍可達 1）。
+  - B）調整 B_LUT 範圍：將掃動下緣推低（如 20–2000 Hz），使 bass 基音也進入掃動區。
+  - C）加諧振（Q factor）：在截止頻率附近加 boost，wah 感更強，但設計複雜度大增。
+  - **建議先試 B**：修改 B_LUT 成本最低（純軟體），無需改 HLS 架構，不影響 II。
+- **影響範圍**：`hls/effect_ip/wobble.cpp`（B_LUT 調整）或 `process_sample.cpp`（2nd-order state 擴充）。
+
+---
+
+## D27. 板上實測：distortion 高 gain 雜訊放大（Post-MVP 優化待辦）
+
+- **背景**：Phase 6 DMA 架構接 codec 實測（2026-06-14），distortion gain 調高時，底噪（noise floor）被明顯放大，與 passthrough 和 wobble 模式相比差異顯著。
+- **根本原因**：hard clipping 在 clip 之前對全頻訊號（含底噪）先做 `gain` 倍放大。底噪從原本不可聞（codec ADC 量化噪 ≈ −144 dBFS @ 24-bit）經 ×8–20 放大後提升 18–26 dB，進入可聞範圍。被動 bass 直插 line-in 的阻抗不匹配（D1 §5.3）也使底噪比例偏高，加劇問題。
+- **後續優化選項（Post-MVP）**：
+  - A）**加 noise gate**（建議首選）：在 gain 放大前判斷 `|in| < noise_threshold`，若成立則輸出 0（靜音）。noise_threshold 可設為獨立的 AXI-Lite 參數，讓 PS 動態調整。實作成本低，HLS 一個 `if` 即可，不影響 II。
+  - B）**soft knee clipping**：把硬切換成平滑過渡，減少截波產生的高諧波，但對底噪本身無幫助。
+  - C）主動 DI（硬體）：改善阻抗匹配，降低底噪源頭，但這是 demo 佈置問題，非 IP 問題。
+  - **建議先試 A**：noise gate 實作最簡單，直接在 `apply_distortion()` 加判斷，不需改介面合約，可搭配 B 使用。
+- **影響範圍**：`hls/effect_ip/distortion.cpp`、`effect_ip.h`（若新增 noise_threshold 參數則需更新 AXI-Lite 位址表並通知 Claire）。
+
+---
+
 ## 待補決策(後續 Phase 產生)
 
-- `process_sample()` 跨 sample 狀態結構完整定案（Phase 3，wobble 實作後）。
-- low/high 參數的實際數值(Phase 4,調出好聽範圍)。
-- wobble 中間運算型別寬度（Phase 3）。
-- wobble 濾波器係數查表的頻率範圍與量化精度(Phase 3)。
+- low/high 參數的實際數值（Phase 4，調出好聽範圍）。
+- Phase 4 按鈕對應的效果切換邏輯與預設參數組設計。
