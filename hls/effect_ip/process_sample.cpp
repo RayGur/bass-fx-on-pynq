@@ -19,11 +19,11 @@ void process_sample_core(
         sig_r = apply_distortion(sig_r, threshold, gain);
     }
 
-    // --- wobble (uncomment in Phase 3) ---
-    // if (wobble_en) {
-    //     sig_l = apply_wobble(sig_l, lfo_rate, lfo_depth, state);
-    //     sig_r = apply_wobble(sig_r, lfo_rate, lfo_depth, state);
-    // }
+    // --- wobble (Phase 3) ---
+    if (wobble_en) {
+        sig_l = apply_wobble(sig_l, lfo_rate, lfo_depth, state, /*is_l=*/true);
+        sig_r = apply_wobble(sig_r, lfo_rate, lfo_depth, state, /*is_l=*/false);
+    }
 
     *out_l = sig_l;
     *out_r = sig_r;
@@ -52,7 +52,7 @@ void process_sample(
 #pragma HLS INTERFACE s_axilite port=lfo_depth  bundle=ctrl
 #pragma HLS INTERFACE s_axilite port=return     bundle=ctrl
 
-    static state_t state = {0, sample_t(0)};
+    static state_t state = {0, 0, 0};
 
     // Loop over individual 32-bit words (n_samples*2 total: L0,R0,L1,R1,...).
     // One read + one write per iteration → achieves II=1.
@@ -72,11 +72,11 @@ void process_sample(
         } else {
             out_s = in_s;
         }
-        // Phase 3 wobble hook (disabled until Phase 3):
-        //   bool is_l = (i % 2 == 0);
-        //   if (wobble_en) out_s = apply_wobble(out_s, lfo_rate, lfo_depth,
-        //                                       &state, is_l);
-        // See docs/phase3.md §Loop restructure note for state_t L/R split.
+        // --- wobble (Phase 3) ---
+        if (wobble_en) {
+            bool is_l = (i % 2 == 0);
+            out_s = apply_wobble(out_s, lfo_rate, lfo_depth, &state, is_l);
+        }
 
         audio_pkt_t out_pkt;
         out_pkt.data = 0;

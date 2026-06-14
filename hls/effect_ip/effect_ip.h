@@ -15,11 +15,13 @@ typedef ap_fixed<24, 1> sample_t;
 typedef int param_t;
 
 // Cross-sample state (Phase 3)
-// lfo_phase : LFO phase accumulator, wraps naturally at 2^32 (one full cycle)
-// iir_prev  : IIR filter previous output y[n-1], same format as sample_t
+// lfo_phase  : LFO phase accumulator, wraps naturally at 2^32 (one full cycle)
+// iir_prev_L : IIR previous output for left channel (ap_fixed<32,2> stores unclamped y)
+// iir_prev_R : IIR previous output for right channel
 typedef struct {
-    ap_uint<32>  lfo_phase;
-    sample_t     iir_prev;
+    ap_uint<32>    lfo_phase;
+    ap_fixed<32,2> iir_prev_L;
+    ap_fixed<32,2> iir_prev_R;
 } state_t;
 
 // AXI-Stream packet: 32-bit data + TLAST
@@ -54,7 +56,10 @@ void process_sample_core(
 // Distortion hard clipping
 sample_t apply_distortion(sample_t in, param_t threshold, param_t gain);
 
-// Wobble IIR + LFO (Phase 3, filled by Claire)
-sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth, state_t *state);
+// Wobble IIR + LFO (Phase 3)
+// is_l=true: advance LFO phase, use iir_prev_L
+// is_l=false: hold LFO phase, use iir_prev_R
+sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
+                      state_t *state, bool is_l);
 
 #endif // EFFECT_IP_H

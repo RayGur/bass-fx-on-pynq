@@ -50,17 +50,23 @@
 #define DMA_SR_IOC (1 << 12) // IOC_Irq: transfer complete
 
 // ── Effect IP (process_sample) AXI-Lite offsets ──────────────
-#define EFFECT_CTRL 0x00 // bit0=AP_START, bit7=AUTO_RESTART
+#define EFFECT_CTRL      0x00 // bit0=AP_START, bit7=AUTO_RESTART
 #define EFFECT_N_SAMPLES 0x10
-#define EFFECT_DIST_EN 0x18
+#define EFFECT_DIST_EN   0x18
 #define EFFECT_WOBBLE_EN 0x20
 #define EFFECT_THRESHOLD 0x28 // Q1.23 int: int(clip_float * (1<<23))
-#define EFFECT_GAIN 0x30      // integer 1–20
+#define EFFECT_GAIN      0x30 // integer 1–20
+#define EFFECT_LFO_RATE  0x38 // phase increment per L-sample (2^32 = one full LFO cycle)
+#define EFFECT_LFO_DEPTH 0x40 // 0–100 (maps LFO sweep to B_LUT index range)
 
 // ── Default effect parameters (adjust via Python after boot) ─
-#define DEFAULT_DIST_EN 0
+#define DEFAULT_DIST_EN   0
+#define DEFAULT_WOBBLE_EN 1
 #define DEFAULT_THRESHOLD ((int)(0.3f * (1 << 23))) // 0.3 full scale
-#define DEFAULT_GAIN 8
+#define DEFAULT_GAIN      8
+// lfo_rate ≈ 1 Hz sweep at 48 kHz: 2^32 / 48000 ≈ 89478
+#define DEFAULT_LFO_RATE  89478
+#define DEFAULT_LFO_DEPTH 100
 
 // ── Buffer config (non-cacheable = cache coherent with DMA) ──
 #define N_SAMPLES 255
@@ -136,10 +142,12 @@ static void diag_buf(const char *tag, int32_t *buf)
 static void effect_init(void)
 {
     REG_W(effect, EFFECT_N_SAMPLES, N_SAMPLES);
-    REG_W(effect, EFFECT_DIST_EN, DEFAULT_DIST_EN);
-    REG_W(effect, EFFECT_WOBBLE_EN, 0);
+    REG_W(effect, EFFECT_DIST_EN,   DEFAULT_DIST_EN);
+    REG_W(effect, EFFECT_WOBBLE_EN, DEFAULT_WOBBLE_EN);
     REG_W(effect, EFFECT_THRESHOLD, DEFAULT_THRESHOLD);
-    REG_W(effect, EFFECT_GAIN, DEFAULT_GAIN);
+    REG_W(effect, EFFECT_GAIN,      DEFAULT_GAIN);
+    REG_W(effect, EFFECT_LFO_RATE,  DEFAULT_LFO_RATE);
+    REG_W(effect, EFFECT_LFO_DEPTH, DEFAULT_LFO_DEPTH);
     // AP_START | AUTO_RESTART: IP restarts after each stream transfer
     REG_W(effect, EFFECT_CTRL, (1 << 7) | (1 << 0));
 
@@ -147,8 +155,11 @@ static void effect_init(void)
     uint32_t rb_n = REG_R(effect, EFFECT_N_SAMPLES);
     uint32_t rb_dis = REG_R(effect, EFFECT_DIST_EN);
     uint32_t rb_ctl = REG_R(effect, EFFECT_CTRL);
-    printf("[init] effect IP: dist_en=%d threshold=0x%x gain=%d\n",
-           DEFAULT_DIST_EN, DEFAULT_THRESHOLD, DEFAULT_GAIN);
+    printf("[init] effect IP: dist_en=%d wobble_en=%d threshold=0x%x gain=%d"
+           "  lfo_rate=%d lfo_depth=%d\n",
+           DEFAULT_DIST_EN, DEFAULT_WOBBLE_EN,
+           DEFAULT_THRESHOLD, DEFAULT_GAIN,
+           DEFAULT_LFO_RATE, DEFAULT_LFO_DEPTH);
     printf("[init] effect readback: n_samples=%u dist_en=%u CTRL=0x%08x"
            "  (ap_start=%d auto_rst=%d)\n",
            rb_n, rb_dis, rb_ctl, rb_ctl & 1, (rb_ctl >> 7) & 1);
