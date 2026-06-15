@@ -94,8 +94,8 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset；btn[2] 循環 wah depth preset A/B/C（14.1 新增）
   - RGB LD4/LD5 顯示 switch 狀態；led[0/1] 顯示 preset 強度
   - axi_gpio_2（0x4003_0000）新增至 BD；hw_cons.xdc 補 6 pin（port: `rgbleds_tri_o_tri_o`）
-  - **前置**：每次執行前需先 `sudo python3 codec_init.py`（載入 overlay + 初始化 codec）
-  - Post-MVP 待辦：LED 亮度（14.3）、KRK 喇叭 crash（14.4）、啟動整合腳本（14.5）— 見 `docs/bass_fx_project_plan.md`
+  - ~~前置：每次執行前需先 `sudo python3 codec_init.py`~~（14.5 後改用 `bash start.sh`）
+  - Post-MVP 待辦：LED 亮度（14.3）、KRK 喇叭 crash（14.4）— 見 `docs/bass_fx_project_plan.md`
 - ✅ **Phase 6**：A→B 升級（C + DMA + 雙緩衝）— **完成**（branch: `phase6/wobble`）
   - 架構定案：C + DMA（見 D18–D21，`docs/phase6.md`）
   - 板上確認：`pynq.allocate()` 可用、gcc 7.3.0 可用
@@ -103,6 +103,16 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - BUG 修復：D23（TKEEP=0）、D24（II=2 → R channel 不寫）、D25（HP0 64-bit 交錯寫）
   - DMA pipeline + codec 音訊驗證全部 PASS
   - 板上工作目錄：`~/bass-fx/wobble_dma/`；compile：`gcc audio_dma.c -lcma -lpthread -O2`
+- 🚧 **feat/ui**：PC-side GUI（Tkinter + paramiko）— **開發中 2026-06-16**（branch: `feat/ui`）
+  - **14.5** ✅：`start.sh` 合一啟動（codec_init.py + audio_dma），root-aware 不重複 sudo
+  - **14.6** ✅：`audio_dma.c` 清理（移除 diag/cross-verify/sentinel），加 `-DNDEBUG`，compile PASS
+  - **GPIO 共存** ✅：`access("/tmp/bass_ui_active")` 檢查，UI 啟動時跳過 sw GPIO polling
+  - **ctrl_client.py** ✅：板上 AXI-Lite 控制代理，STATE stdout 100ms 輸出，sentinel 管理；板上 sudo -S 測試 PASS
+  - **bass_ui.py** ✅：吉他踏板盤 Tkinter GUI，paramiko SSH 雙 channel，ssh 連線測試 PASS
+  - 板上工作目錄：`~/bass-fx/ui_dev/`；compile：`gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma`
+  - **啟動方式（UI 模式）**：`python3 ui/bass_ui.py`（PC 端，需 pip install paramiko）
+  - **啟動方式（獨立）**：`bash ~/bass-fx/ui_dev/start.sh`（板上互動 session）
+  - **剩餘風險**：端到端音訊互動測試（ctrl_client.py AXI-Lite write）需 overlay 已載入後驗聽
 
 > 進度隨開發更新。
 
