@@ -23,6 +23,7 @@ import sys
 import os
 import mmap
 import struct
+import subprocess
 import threading
 import time
 import signal
@@ -132,6 +133,10 @@ def handle_command(line):
             dist_preset = int(arg) & 1
         elif cmd == 'wobble_preset':
             wobble_preset = int(arg) & 1
+        elif cmd == 'quit':
+            # Kill audio_dma (runs as root, so no sudo needed) then exit cleanly
+            subprocess.run(['pkill', '-f', 'audio_dma'], check=False)
+            sys.exit(0)
     except (ValueError, OverflowError) as e:
         sys.stderr.write("[ctrl_client] bad cmd: {} ({})\n".format(line.strip(), e))
         sys.stderr.flush()
@@ -179,12 +184,13 @@ def main():
 
     init_mmap()
 
-    # Stdin reader (daemon — exits when main exits)
+    # Stdin reader (daemon — exits when stdin closes / EOF)
     t = threading.Thread(target=stdin_reader, daemon=True)
     t.start()
 
     # Main polling loop: output STATE every 100 ms
-    while True:
+    # Exit when stdin closes (t finishes) so the process terminates cleanly.
+    while t.is_alive():
         global dist_preset, wobble_preset, wah_depth
         sw  = read_gpio_sw()
         sw1 = (sw >> 1) & 1

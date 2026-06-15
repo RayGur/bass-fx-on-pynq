@@ -677,9 +677,32 @@ class App:
                      fg=C_ACCENT if j == idx else C_DIM)
 
     def _stop_fx(self):
+        """Initiate stop: disable buttons immediately, do teardown in background."""
+        self._set_status("● Stopping…", "#ffaa44")
+        self.root.after(0, lambda: (
+            self.stop_btn.config(state=tk.DISABLED),
+            self.start_btn.config(state=tk.DISABLED),
+        ))
+        threading.Thread(target=self._run_stop_fx, daemon=True).start()
+
+    def _run_stop_fx(self):
+        """Background: send quit to ctrl_client (it kills audio_dma), then fallback pkill."""
+        # 1. Send quit command — ctrl_client.py runs as root and pkills audio_dma then exits
+        with self._ctrl_lock:
+            stdin = self.ctrl_stdin
+        if stdin:
+            try:
+                stdin.write("quit\n")
+                stdin.flush()
+            except Exception:
+                pass
+
+        # 2. Give ctrl_client time to kill audio_dma and exit cleanly
+        time.sleep(0.5)
+
         self._stop_ev.set()
 
-        # Close ctrl_client.py gracefully (EOF → cleanup → sentinel removed)
+        # 3. Close ctrl channel (cleanup regardless of whether quit succeeded)
         with self._ctrl_lock:
             try:
                 if self.ctrl_stdin:
@@ -689,18 +712,21 @@ class App:
             self.ctrl_stdin  = None
             self.ctrl_stdout = None
 
-        # Kill audio_dma on board via a separate SSH exec
+        # 4. Fallback pkill in case quit command did not reach ctrl_client
         if self.ssh:
             try:
-                self.ssh.exec_command(
-                    "sudo pkill -f audio_dma 2>/dev/null; true",
+                kill_in, _, _ = self.ssh.exec_command(
+                    "sudo -S bash -c 'pkill -f ctrl_client.py;"
+                    " pkill -f audio_dma' 2>/dev/null; true",
                     timeout=5)
+                kill_in.write(self._board_pass + "\n")
+                kill_in.flush()
             except Exception:
                 pass
 
         self.fx_chan = None
+        self._last_sw = "--"
         self._set_status("● Stopped", C_DIM)
-        self._last_sw = "--"   # reset so next connect re-syncs stomp state
         self.root.after(0, lambda: (
             self.start_btn.config(state=tk.NORMAL if self.ssh else tk.DISABLED),
             self.stop_btn.config(state=tk.DISABLED),
