@@ -21,7 +21,7 @@ static int test_passthrough(float val_l, float val_r, const char *label) {
     sample_t in_l  = to_sample(val_l);
     sample_t in_r  = to_sample(val_r);
     sample_t out_l = 0, out_r = 0;
-    state_t  state = {0, 0, 0};
+    state_t  state = {0, 0, 0, 0, 0};
 
     process_sample_core(in_l, in_r, &out_l, &out_r,
                         false, false, 0, 0, 0, 0, &state);
@@ -41,7 +41,7 @@ static int test_distortion(float in_f, float threshold_f, int gain,
                             float expected, float tol, const char *label) {
     sample_t in_l  = to_sample(in_f);
     sample_t out_l = 0, out_r = 0;
-    state_t  state = {0, 0, 0};
+    state_t  state = {0, 0, 0, 0, 0};
     param_t  thr   = to_threshold(threshold_f);
 
     process_sample_core(in_l, in_l, &out_l, &out_r,
@@ -62,7 +62,7 @@ static int test_distortion(float in_f, float threshold_f, int gain,
 static int test_wobble_zero(const char *label) {
     sample_t in_l  = to_sample(0.0f);
     sample_t out_l = 0, out_r = 0;
-    state_t  state = {0, 0, 0};
+    state_t  state = {0, 0, 0, 0, 0};
 
     process_sample_core(in_l, in_l, &out_l, &out_r,
                         false, true, 0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100, &state);
@@ -76,18 +76,18 @@ static int test_wobble_zero(const char *label) {
 
 // -----------------------------------------------------------------------
 // test_wobble_attenuation: with lfo_rate=0 and lfo_depth=0, lut_idx=0 always,
-// giving b = B_LUT[0]/32768 ≈ 0.0262. Starting from zero state, first L output
-// ≈ b * in, which must satisfy 0 < out_l < in_l (IIR attenuates towards zero).
+// giving b = B_LUT[0]/32768 ≈ 0.00131 (fc≈10 Hz). With 2nd-order cascade,
+// first L output ≈ b²*in ≈ 8.6e-7 (for in=0.5), which satisfies 0 < out_l < in_l.
 // -----------------------------------------------------------------------
 static int test_wobble_attenuation(const char *label) {
     sample_t in_l  = to_sample(0.5f);
     sample_t out_l = 0, out_r = 0;
-    state_t  state = {0, 0, 0};
+    state_t  state = {0, 0, 0, 0, 0};
 
     process_sample_core(in_l, in_l, &out_l, &out_r,
                         false, true, 0, 0, /*lfo_rate=*/0, /*lfo_depth=*/0, &state);
 
-    // b≈0.026: output ≈ b*in, strictly between 0 and in
+    // b≈0.00131: 2nd-order output ≈ b²*in ≈ 8.6e-7 (in=0.5), strictly between 0 and in
     bool pass = ((float)out_l > 0.0f) && ((float)out_l < (float)in_l)
              && ((float)out_r > 0.0f) && ((float)out_r < (float)in_l);
     std::cout << "[" << (pass ? "PASS" : "FAIL") << "] wobble:" << label
@@ -105,7 +105,7 @@ static int test_wobble_lfo_separates_lr(const char *label) {
     // because R sees the already-advanced lfo_phase but holds its own iir_prev.
     // Simple sanity: output stays bounded in [-1, 0.9999].
     sample_t in_l = to_sample(0.8f);
-    state_t  state = {0, 0, 0};
+    state_t  state = {0, 0, 0, 0, 0};
     int fail = 0;
 
     for (int i = 0; i < 32; i++) {

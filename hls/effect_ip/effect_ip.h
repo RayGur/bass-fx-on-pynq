@@ -15,13 +15,17 @@ typedef ap_fixed<24, 1> sample_t;
 typedef int param_t;
 
 // Cross-sample state (Phase 3)
-// lfo_phase  : LFO phase accumulator, wraps naturally at 2^32 (one full cycle)
-// iir_prev_L : IIR previous output for left channel (ap_fixed<32,2> stores unclamped y)
-// iir_prev_R : IIR previous output for right channel
+// lfo_phase   : LFO phase accumulator, wraps naturally at 2^32 (one full cycle)
+// iir_prev_L  : stage-1 IIR previous output, left channel  (unclamped ap_fixed<32,2>)
+// iir_prev_R  : stage-1 IIR previous output, right channel
+// iir_prev2_L : stage-2 IIR previous output, left channel  (2nd-order cascade, 14.1)
+// iir_prev2_R : stage-2 IIR previous output, right channel
 typedef struct {
     ap_uint<32>    lfo_phase;
     ap_fixed<32,2> iir_prev_L;
     ap_fixed<32,2> iir_prev_R;
+    ap_fixed<32,2> iir_prev2_L;
+    ap_fixed<32,2> iir_prev2_R;
 } state_t;
 
 // AXI-Stream packet: 32-bit data + TLAST

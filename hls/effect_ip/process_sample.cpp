@@ -52,7 +52,7 @@ void process_sample(
 #pragma HLS INTERFACE s_axilite port=lfo_depth  bundle=ctrl
 #pragma HLS INTERFACE s_axilite port=return     bundle=ctrl
 
-    static state_t state = {0, 0, 0};
+    static state_t state = {0, 0, 0, 0, 0};
 
     // Loop over individual 32-bit words (n_samples*2 total: L0,R0,L1,R1,...).
     // One read + one write per iteration → achieves II=1.
