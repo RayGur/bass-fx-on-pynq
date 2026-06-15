@@ -188,9 +188,13 @@ class App:
         self._stop_ev     = threading.Event()
         self._ctrl_lock   = threading.Lock()
 
-        # Effect enable state
+        # Effect enable state (driven by both GPIO sw and UI stomps)
         self.dist_en    = tk.BooleanVar(value=False)
         self.wobble_en  = tk.BooleanVar(value=False)
+
+        # GPIO sync helpers
+        self._last_sw        = "--"   # last seen sw string ("01" etc.)
+        self._gpio_updating  = False  # True while syncing from GPIO; suppresses send_cmd
 
         # Preset indices (tracked for STATE sync)
         self.dist_preset_idx    = 0
@@ -328,10 +332,12 @@ class App:
                           font=("Arial", 13, "bold"))
 
         def toggle(_e):
-            if not self.ssh:
+            if not self.ssh or self._gpio_updating:
                 return
             var.set(not var.get())
             self.send_cmd(f"{cmd_name} {1 if var.get() else 0}")
+            # Note: GPIO sw is master; if sw disagrees, audio_dma overrides
+            # within ~5.33 ms and the next STATE line will correct the display.
 
         c.bind("<ButtonPress-1>", toggle)
         var.trace_add("write", redraw)
@@ -603,7 +609,7 @@ class App:
             print(f"[bass_ui] state reader: {exc}")
 
     def _parse_state(self, line):
-        """Parse 'STATE sw=01 ...' and update sw indicator in UI thread."""
+        """Parse 'STATE sw=01 ...' and update UI from GPIO sw state."""
         parts = {}
         for tok in line.split()[1:]:
             if "=" in tok:
@@ -611,6 +617,22 @@ class App:
                 parts[k] = v
         sw = parts.get("sw", "--")
         self.root.after(0, lambda s=sw: self.sw_var.set(f"SW:{s}"))
+        # Update stomp buttons when sw changes (GPIO is master)
+        if sw != self._last_sw and len(sw) == 2 and sw.isdigit():
+            self._last_sw = sw
+            self.root.after(0, lambda s=sw: self._sync_sw_to_ui(s))
+
+    def _sync_sw_to_ui(self, sw_str):
+        """Reflect board GPIO sw[1:0] in stomp button state (no commands sent)."""
+        # sw_str = "XY" where X=sw[1]=wobble, Y=sw[0]=dist
+        sw0 = bool(int(sw_str[1]))   # sw[0] → dist_en
+        sw1 = bool(int(sw_str[0]))   # sw[1] → wobble_en
+        self._gpio_updating = True
+        try:
+            self.dist_en.set(sw0)
+            self.wobble_en.set(sw1)
+        finally:
+            self._gpio_updating = False
 
     def _stop_fx(self):
         self._stop_ev.set()
@@ -636,6 +658,7 @@ class App:
 
         self.fx_chan = None
         self._set_status("● Stopped", C_DIM)
+        self._last_sw = "--"   # reset so next connect re-syncs stomp state
         self.root.after(0, lambda: (
             self.start_btn.config(state=tk.NORMAL if self.ssh else tk.DISABLED),
             self.stop_btn.config(state=tk.DISABLED),

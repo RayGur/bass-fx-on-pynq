@@ -10,8 +10,9 @@
 //   gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma
 //   sudo ./audio_dma
 //
-// GPIO co-exist: when /tmp/bass_ui_active exists, sw[0/1] GPIO polling
-// is skipped (PC UI controls dist_en/wobble_en via ctrl_client.py).
+// GPIO co-exist (bidirectional): sw[0/1] always controls dist_en/wobble_en.
+// PC UI (ctrl_client.py) can also write dist_en/wobble_en; GPIO is master
+// and overrides UI within ~5.33 ms. UI reflects sw state via STATE stdout.
 // btn[0/1/2] preset switching always active.
 //
 // Base addresses (INTERFACE.md, Phase 6 BD):
@@ -187,19 +188,17 @@ static void update_leds(uint32_t sw)
 
 // ── GPIO polling / control (called once per audio buffer ~5.33 ms) ──
 //
-// When /tmp/bass_ui_active exists, PC UI controls dist_en/wobble_en
-// (via ctrl_client.py writing AXI-Lite directly).  In this mode the
-// sw[0/1] GPIO check is skipped so the physical switches don't fight
-// the UI.  btn[0/1/2] preset switching is always active.
+// sw[0/1] is always applied to dist_en/wobble_en; GPIO is master even
+// when bass_ui.py is connected.  PC UI reflects the sw state via the
+// STATE lines emitted by ctrl_client.py.
+// btn[0/1/2] preset switching is always active.
 static void control_poll(void)
 {
-    int ui_active = (access("/tmp/bass_ui_active", F_OK) == 0);
-
     uint32_t sw  = REG_R(gpio0, GPIO_DATA)  & 0x3u;
     uint32_t btn = REG_R(gpio0, GPIO_DATA2) & 0x7u;
 
-    // sw[0/1] → dist_en / wobble_en (skipped when UI is active)
-    if (!ui_active && sw != prev_sw) {
+    // sw[0/1] → dist_en / wobble_en (always, GPIO is master)
+    if (sw != prev_sw) {
         REG_W(effect, EFFECT_DIST_EN,   sw & 1u);
         REG_W(effect, EFFECT_WOBBLE_EN, (sw >> 1) & 1u);
         prev_sw = sw;
