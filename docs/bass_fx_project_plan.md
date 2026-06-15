@@ -509,17 +509,19 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 ### 14.4 高 gain + 串接時外接主動式喇叭 crash（板上實測，2026-06-14）
 
-**症狀**：sw[0]+sw[1] 同開、distortion 設 high、大力撥弦，KRK Rokit 5（studio monitor）會保護電路跳；EarPods 不會。  
-**根因**：hard clipping 後 RMS 大幅上升，輸出電平超過 KRK Rokit 5 line in 額定（+4 dBu），觸發保護。EarPods 為被動高阻抗負載，不受影響。  
+**症狀 A（最初發現）**：sw[0]+sw[1] 同開、distortion 設 high、大力撥弦，KRK Rokit 5（studio monitor）會保護電路跳；EarPods 不會。  
+**症狀 B（2026-06-15 追加）**：頻繁快速切換 sw[0] / sw[1]（開關效果），KRK Rokit 5 也會 crash。根因尚未確認，可能原因：switch 瞬間切換時 PS 寫入 AXI-Lite enable 寄存器與 DMA 傳輸競爭，導致 out_buf 短暫輸出未定義值（極大電平脈衝）。  
+**根因（症狀 A）**：hard clipping 後 RMS 大幅上升，輸出電平超過 KRK Rokit 5 line in 額定（+4 dBu），觸發保護。EarPods 為被動高阻抗負載，不受影響。  
 **優化方向**（依實作成本排序）：
 
 | 選項 | 成本 | 說明 |
 |------|------|------|
-| 降低 `DIST_GAIN_HIGH` 預設值（12 → 8）| 低（改一個 `#define`，重編譯）| 直接壓低電平，最快 |
+| 降低 `DIST_GAIN_HIGH` 預設值（12 → 8）| 低（改一個 `#define`，重編譯）| 直接壓低電平，對症狀 A 最快 |
 | 在 `audio_loop()` 對 `out_buf` 整體縮放（× 0.5）| 低（純 PS C，不改 HLS）| 全域輸出衰減，對所有效果生效 |
+| 調查 sw 切換時序，確認是否有輸出脈衝 | 低（加 log 或示波器量）| 釐清症狀 B 根因 |
 | 在 HLS 加 output gain 參數 | 中（需重合成 bitstream）| 最靈活，可即時調整 |
 
-**建議**：先降 `DIST_GAIN_HIGH`（PS 端改一行），測試後決定是否需 output gain 參數。
+**建議**：先降 `DIST_GAIN_HIGH`（PS 端改一行）解決症狀 A；症狀 B 根因待下次遇到時進一步調查。
 
 ### 14.5 codec_init.py + audio_dma 整合（易用性，2026-06-14）
 
