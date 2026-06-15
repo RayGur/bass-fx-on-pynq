@@ -73,6 +73,7 @@
 #define EFFECT_GAIN      0x30 // integer 1–20
 #define EFFECT_LFO_RATE  0x38 // phase increment per L-sample (2^32 = one full LFO cycle)
 #define EFFECT_LFO_DEPTH 0x40 // 0–100 (maps LFO sweep to B_LUT index range)
+#define EFFECT_LFO_FLOOR 0x48 // 0–15  (minimum B_LUT index; wah depth preset)
 
 // ── Effect preset parameter tables (Phase 4) ─────────────────
 // Distortion low: gentle clip (threshold 0.5, gain 4)
@@ -88,6 +89,17 @@
 #define WOBBLE_RATE_FAST    357914  // 4 Hz  (= 4 * 2^32 / 48000)
 #define WOBBLE_DEPTH_FAST   100
 
+// Wah depth presets (btn2 cycles A→B→C, 14.1)
+// lfo_floor = minimum B_LUT index; sets the trough cutoff frequency
+// A: floor=6 → fc≈83 Hz trough, -6 dB at 80 Hz (audible, default)
+// B: floor=4 → fc≈41 Hz trough, -18 dB at 80 Hz (very dark)
+// C: floor=0 → fc=10 Hz trough, -36 dB at 80 Hz (near-silent)
+#define WAH_FLOOR_A 6
+#define WAH_FLOOR_B 4
+#define WAH_FLOOR_C 0
+static const int wah_floor_values[3] = { WAH_FLOOR_A, WAH_FLOOR_B, WAH_FLOOR_C };
+static const char *wah_floor_names[3] = { "A(fc≈83Hz)", "B(fc≈41Hz)", "C(fc=10Hz)" };
+
 // ── Buffer config (non-cacheable = cache coherent with DMA) ──
 #define N_SAMPLES 255
 #define N_WORDS (N_SAMPLES * 2) // L then R, interleaved
@@ -102,12 +114,13 @@ static volatile uint32_t *gpio1;  // led[3:0] output
 static volatile uint32_t *gpio2;  // rgbleds[5:0] output
 
 // ── Control state (Phase 4) ───────────────────────────────────
-static int dist_preset   = 0;  // 0=low, 1=high
-static int wobble_preset = 0;  // 0=slow, 1=fast
-static uint32_t prev_sw  = 0xFF; // force first write on boot
+static int dist_preset      = 0;  // 0=low, 1=high
+static int wobble_preset    = 0;  // 0=slow, 1=fast
+static int wah_depth_preset = 0;  // 0=A, 1=B, 2=C (btn2 cycles)
+static uint32_t prev_sw     = 0xFF; // force first write on boot
 
 #define DEBOUNCE_COUNT 3  // consecutive polls needed ≈ 3 × 5.33 ms = 16 ms
-static struct { int count; int fired; } btn_db[2]; // [0]=dist, [1]=wobble
+static struct { int count; int fired; } btn_db[3]; // [0]=dist, [1]=wobble, [2]=wah_depth
 
 static int32_t *in_buf[2], *out_buf[2];
 static uint32_t in_phys[2], out_phys[2];
@@ -192,6 +205,11 @@ static void apply_wobble_preset(void)
     }
 }
 
+static void apply_wah_depth_preset(void)
+{
+    REG_W(effect, EFFECT_LFO_FLOOR, wah_floor_values[wah_depth_preset]);
+}
+
 static void update_leds(uint32_t sw)
 {
     // led[0] = dist_preset, led[1] = wobble_preset
@@ -206,7 +224,7 @@ static void update_leds(uint32_t sw)
 static void control_poll(void)
 {
     uint32_t sw  = REG_R(gpio0, GPIO_DATA)  & 0x3u; // sw[1:0]
-    uint32_t btn = REG_R(gpio0, GPIO_DATA2) & 0x3u; // btn[1:0] only
+    uint32_t btn = REG_R(gpio0, GPIO_DATA2) & 0x7u; // btn[2:0]
 
     // Switches → dist_en / wobble_en (write only on change)
     if (sw != prev_sw) {
@@ -247,6 +265,21 @@ static void control_poll(void)
         btn_db[1].fired = 0;
     }
 
+    // Button[2]: wah depth preset cycle A→B→C→A
+    if ((btn >> 2) & 1u) {
+        if (!btn_db[2].fired && ++btn_db[2].count >= DEBOUNCE_COUNT) {
+            wah_depth_preset = (wah_depth_preset + 1) % 3;
+            apply_wah_depth_preset();
+            btn_db[2].fired = 1;
+            printf("[ctrl] wah depth → %s  (lfo_floor=%d)\n",
+                   wah_floor_names[wah_depth_preset],
+                   wah_floor_values[wah_depth_preset]);
+        }
+    } else {
+        btn_db[2].count = 0;
+        btn_db[2].fired = 0;
+    }
+
     update_leds(sw);
 }
 
@@ -261,9 +294,10 @@ static void effect_init(void)
     REG_W(effect, EFFECT_DIST_EN,   sw & 1u);
     REG_W(effect, EFFECT_WOBBLE_EN, (sw >> 1) & 1u);
 
-    // Write preset parameters (dist_preset=0=low, wobble_preset=0=slow)
+    // Write preset parameters (dist_preset=0=low, wobble_preset=0=slow, wah_depth=0=A)
     apply_dist_preset();
     apply_wobble_preset();
+    apply_wah_depth_preset();
 
     // AP_START | AUTO_RESTART: IP restarts after each stream transfer
     REG_W(effect, EFFECT_CTRL, (1 << 7) | (1 << 0));
