@@ -24,7 +24,7 @@ static int test_passthrough(float val_l, float val_r, const char *label) {
     state_t  state = {0, 0, 0, 0, 0};
 
     process_sample_core(in_l, in_r, &out_l, &out_r,
-                        false, false, 0, 0, 0, 0, &state);
+                        false, false, 0, 0, 0, 0, 0, &state);
 
     bool pass = (out_l == in_l) && (out_r == in_r);
     std::cout << "[" << (pass ? "PASS" : "FAIL") << "] bypass:" << label
@@ -45,7 +45,7 @@ static int test_distortion(float in_f, float threshold_f, int gain,
     param_t  thr   = to_threshold(threshold_f);
 
     process_sample_core(in_l, in_l, &out_l, &out_r,
-                        true, false, thr, gain, 0, 0, &state);
+                        true, false, thr, gain, 0, 0, 0, &state);
 
     float got  = (float)out_l;
     bool  pass = fabsf(got - expected) <= tol;
@@ -65,7 +65,7 @@ static int test_wobble_zero(const char *label) {
     state_t  state = {0, 0, 0, 0, 0};
 
     process_sample_core(in_l, in_l, &out_l, &out_r,
-                        false, true, 0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100, &state);
+                        false, true, 0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100, /*lfo_floor=*/0, &state);
 
     bool pass = (out_l == to_sample(0.0f)) && (out_r == to_sample(0.0f));
     std::cout << "[" << (pass ? "PASS" : "FAIL") << "] wobble:" << label
@@ -85,7 +85,7 @@ static int test_wobble_attenuation(const char *label) {
     state_t  state = {0, 0, 0, 0, 0};
 
     process_sample_core(in_l, in_l, &out_l, &out_r,
-                        false, true, 0, 0, /*lfo_rate=*/0, /*lfo_depth=*/0, &state);
+                        false, true, 0, 0, /*lfo_rate=*/0, /*lfo_depth=*/0, /*lfo_floor=*/0, &state);
 
     // b≈0.00131: 2nd-order output ≈ b²*in ≈ 8.6e-7 (in=0.5), strictly between 0 and in
     bool pass = ((float)out_l > 0.0f) && ((float)out_l < (float)in_l)
@@ -111,7 +111,7 @@ static int test_wobble_lfo_separates_lr(const char *label) {
     for (int i = 0; i < 32; i++) {
         sample_t out_l = 0, out_r = 0;
         process_sample_core(in_l, in_l, &out_l, &out_r,
-                            false, true, 0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100, &state);
+                            false, true, 0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100, /*lfo_floor=*/0, &state);
         if ((float)out_l < -1.0f || (float)out_l > 0.9999f ||
             (float)out_r < -1.0f || (float)out_r > 0.9999f) {
             std::cout << "[FAIL] wobble:" << label << " iter=" << i
@@ -142,7 +142,7 @@ static int test_stream_wobble(float in_f, int n_pairs, const char *label) {
 
     process_sample(s_in, s_out, n_pairs,
                    /*dist_en=*/0, /*wobble_en=*/1,
-                   0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100);
+                   0, 0, /*lfo_rate=*/89478, /*lfo_depth=*/100, /*lfo_floor=*/0);
 
     int fail = 0;
     for (int i = 0; i < total; i++) {
@@ -191,7 +191,7 @@ static int test_stream(float in_f, float threshold_f, int gain,
 
     process_sample(s_in, s_out, n_pairs,
                    /*dist_en=*/1, /*wobble_en=*/0,
-                   thr, gain, 0, 0);
+                   thr, gain, 0, 0, /*lfo_floor=*/0);
 
     int fail = 0;
     for (int i = 0; i < total; i++) {

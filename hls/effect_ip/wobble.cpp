@@ -24,7 +24,7 @@ static const ap_uint<16> B_LUT[16] = {
 //   5. y = b * in + (1-b) * iir_prev  (IIR low-pass)
 //   6. Clamp output to [-1.0, +0.9999]; store unclamped y back to state
 sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
-                      state_t *state, bool is_l) {
+                      param_t lfo_floor, state_t *state, bool is_l) {
 #pragma HLS INLINE
 
     // --- LFO phase update (L sample only) ---
@@ -40,7 +40,11 @@ sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
     ap_uint<8>  depth_scaled = (ap_uint<8>)(depth_prod / 100);
     ap_uint<4>  lut_idx      = depth_scaled >> 4;
 
-    ap_uint<16> b_raw = B_LUT[lut_idx];
+    // lfo_floor clamps the minimum LUT index (wah depth preset, 14.1)
+    ap_uint<4>  floor_idx    = (ap_uint<4>)lfo_floor;
+    ap_uint<4>  eff_idx      = (lut_idx < floor_idx) ? floor_idx : lut_idx;
+
+    ap_uint<16> b_raw = B_LUT[eff_idx];
 
     // --- Convert Q15 integer to fixed-point coefficient b ∈ (0,1) ---
     // Division by power-of-2 (32768 = 2^15); HLS optimises to right-shift

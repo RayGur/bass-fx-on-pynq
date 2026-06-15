@@ -8,6 +8,7 @@ void process_sample_core(
     bool      dist_en,     bool      wobble_en,
     param_t   threshold,   param_t   gain,
     param_t   lfo_rate,    param_t   lfo_depth,
+    param_t   lfo_floor,
     state_t  *state
 ) {
     sample_t sig_l = in_l;
@@ -21,8 +22,8 @@ void process_sample_core(
 
     // --- wobble (Phase 3) ---
     if (wobble_en) {
-        sig_l = apply_wobble(sig_l, lfo_rate, lfo_depth, state, /*is_l=*/true);
-        sig_r = apply_wobble(sig_r, lfo_rate, lfo_depth, state, /*is_l=*/false);
+        sig_l = apply_wobble(sig_l, lfo_rate, lfo_depth, lfo_floor, state, /*is_l=*/true);
+        sig_r = apply_wobble(sig_r, lfo_rate, lfo_depth, lfo_floor, state, /*is_l=*/false);
     }
 
     *out_l = sig_l;
@@ -39,7 +40,8 @@ void process_sample(
     int     n_samples,
     bool    dist_en,    bool    wobble_en,
     param_t threshold,  param_t gain,
-    param_t lfo_rate,   param_t lfo_depth
+    param_t lfo_rate,   param_t lfo_depth,
+    param_t lfo_floor
 ) {
 #pragma HLS INTERFACE axis      port=s_in       depth=512
 #pragma HLS INTERFACE axis      port=s_out      depth=512
@@ -50,6 +52,7 @@ void process_sample(
 #pragma HLS INTERFACE s_axilite port=gain       bundle=ctrl
 #pragma HLS INTERFACE s_axilite port=lfo_rate   bundle=ctrl
 #pragma HLS INTERFACE s_axilite port=lfo_depth  bundle=ctrl
+#pragma HLS INTERFACE s_axilite port=lfo_floor  bundle=ctrl
 #pragma HLS INTERFACE s_axilite port=return     bundle=ctrl
 
     static state_t state = {0, 0, 0, 0, 0};
@@ -75,7 +78,7 @@ void process_sample(
         // --- wobble (Phase 3) ---
         if (wobble_en) {
             bool is_l = (i % 2 == 0);
-            out_s = apply_wobble(out_s, lfo_rate, lfo_depth, &state, is_l);
+            out_s = apply_wobble(out_s, lfo_rate, lfo_depth, lfo_floor, &state, is_l);
         }
 
         audio_pkt_t out_pkt;

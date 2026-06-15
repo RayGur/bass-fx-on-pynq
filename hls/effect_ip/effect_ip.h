@@ -43,7 +43,8 @@ void process_sample(
     int     n_samples,
     bool    dist_en,    bool    wobble_en,
     param_t threshold,  param_t gain,
-    param_t lfo_rate,   param_t lfo_depth
+    param_t lfo_rate,   param_t lfo_depth,
+    param_t lfo_floor
 );
 
 // Processing core — one stereo pair per call.
@@ -54,6 +55,7 @@ void process_sample_core(
     bool      dist_en,     bool      wobble_en,
     param_t   threshold,   param_t   gain,
     param_t   lfo_rate,    param_t   lfo_depth,
+    param_t   lfo_floor,
     state_t  *state
 );
 
@@ -63,7 +65,8 @@ sample_t apply_distortion(sample_t in, param_t threshold, param_t gain);
 // Wobble IIR + LFO (Phase 3)
 // is_l=true: advance LFO phase, use iir_prev_L
 // is_l=false: hold LFO phase, use iir_prev_R
+// lfo_floor: minimum B_LUT index (0–15); clamps sweep bottom for wah depth preset
 sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
-                      state_t *state, bool is_l);
+                      param_t lfo_floor, state_t *state, bool is_l);
 
 #endif // EFFECT_IP_H
