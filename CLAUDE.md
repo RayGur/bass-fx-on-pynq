@@ -109,10 +109,13 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - **GPIO 共存（雙向）** ✅：sw GPIO 永遠寫入 Effect IP（GPIO 為 master），UI stomp 顯示 sw 即時狀態；stomp click 仍可寫入但 ~5.33 ms 內被 GPIO 覆蓋
   - **ctrl_client.py** ✅：板上 AXI-Lite 控制代理，STATE stdout 100ms 輸出，sentinel 管理；板上 sudo -S 測試 PASS
   - **bass_ui.py** ✅：吉他踏板盤 Tkinter GUI，paramiko SSH 雙 channel，ssh 連線測試 PASS
+  - **14.12** ✅：btn[0/1/2] → UI 雙向同步（板上驗聽 PASS）
+    - `ctrl_client.py`：主迴圈每 100ms readback THRESHOLD / LFO_RATE / LFO_FLOOR 暫存器，推斷 preset 索引寫入 STATE
+    - `bass_ui.py`：`_parse_state()` 解析 dist_preset / wobble_preset / wah 欄位；新增三個 `_set_*_preset_btn()` helper 更新按鈕高亮與旋鈕（不送命令）
   - 板上工作目錄：`~/bass-fx/ui_dev/`；compile：`gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma`
   - **啟動方式（UI 模式）**：`python3 ui/bass_ui.py`（PC 端，需 pip install paramiko）
   - **啟動方式（獨立）**：`bash ~/bass-fx/ui_dev/start.sh`（板上互動 session）
-  - **剩餘風險**：端到端音訊互動測試（ctrl_client.py AXI-Lite write）需 overlay 已載入後驗聽
+  - ~~剩餘風險：端到端音訊互動測試~~ → 板上驗聽 PASS
 
 > 進度隨開發更新。
 
