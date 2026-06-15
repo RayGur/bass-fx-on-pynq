@@ -50,18 +50,38 @@ out = clamp(amp, -thr, +thr);           // hard clip
 | 檔案 | 責任人 | 說明 |
 |------|--------|------|
 | `hls/effect_ip/process_sample.cpp` | Ray | AXI-Stream top function + `process_sample_core()`；HLS 合成入口 |
-| `hls/effect_ip/distortion.cpp` | Ray | distortion hard clipping 演算法 |
+| `hls/effect_ip/distortion.cpp` | Ray | distortion hard clipping + noise gate（14.2） |
+| `hls/effect_ip/hpf.cpp` | Ray | DC-blocking HPF Fc≈28 Hz（14.7，新增） |
+| `hls/effect_ip/notch.cpp` | Ray | 60 Hz notch filter（14.7，新增） |
 | `hls/effect_ip/wobble.cpp` | Claire | wobble IIR + LFO 演算法（Phase 3 整合）|
 
-### 跨 sample 狀態 `state_t`（14.1 更新）
+### 跨 sample 狀態 `state_t`（14.9 更新，19 欄）
 
 ```cpp
 typedef struct {
-    ap_uint<32>    lfo_phase;     // LFO 相位累加器，自然 wrap at 2^32
-    ap_fixed<32,2> iir_prev_L;   // stage-1 IIR 前一輸出，左聲道（unclamped y，Q2.30）
-    ap_fixed<32,2> iir_prev_R;   // stage-1 IIR 前一輸出，右聲道
-    ap_fixed<32,2> iir_prev2_L;  // stage-2 IIR 前一輸出，左聲道（2nd-order cascade，14.1）
-    ap_fixed<32,2> iir_prev2_R;  // stage-2 IIR 前一輸出，右聲道
+    // --- Wobble (Phase 3 / 14.1) ---
+    ap_uint<32>    lfo_phase;      // LFO 相位累加器，自然 wrap at 2^32
+    ap_fixed<32,2> iir_prev_L;    // stage-1 IIR 前一輸出，左聲道（Q2.30）
+    ap_fixed<32,2> iir_prev_R;    // stage-1 IIR 前一輸出，右聲道
+    ap_fixed<32,2> iir_prev2_L;   // stage-2 IIR 前一輸出，左聲道（2nd-order，14.1）
+    ap_fixed<32,2> iir_prev2_R;   // stage-2 IIR 前一輸出，右聲道
+    // --- HPF (14.7, Fc≈28 Hz) ---
+    sample_t       hpf_x_prev_L;  // HPF x[n-1]，左聲道（Q1.23）
+    sample_t       hpf_x_prev_R;  // HPF x[n-1]，右聲道
+    ap_fixed<32,2> hpf_y_prev_L;  // HPF y[n-1]，左聲道（Q2.30）
+    ap_fixed<32,2> hpf_y_prev_R;  // HPF y[n-1]，右聲道
+    // --- 60 Hz Notch (14.7, Direct Form I, r=0.9997, BW≈4.6 Hz) ---
+    sample_t       notch_x1_L;    // notch x[n-1]，左聲道
+    sample_t       notch_x1_R;    // notch x[n-1]，右聲道
+    sample_t       notch_x2_L;    // notch x[n-2]，左聲道
+    sample_t       notch_x2_R;    // notch x[n-2]，右聲道
+    ap_fixed<32,2> notch_y1_L;    // notch y[n-1]，左聲道
+    ap_fixed<32,2> notch_y1_R;    // notch y[n-1]，右聲道
+    ap_fixed<32,2> notch_y2_L;    // notch y[n-2]，左聲道
+    ap_fixed<32,2> notch_y2_R;    // notch y[n-2]，右聲道
+    // --- Noise gate hysteresis (14.9) ---
+    bool           dist_gate_open_L;  // 左聲道 gate 狀態（true=open，false=muted）
+    bool           dist_gate_open_R;  // 右聲道 gate 狀態
 } state_t;
 ```
 
@@ -91,6 +111,11 @@ void process_sample_core(
     state_t *state
 );
 
+// distortion hard clipping + hysteresis noise gate (14.2/14.9)
+// open=0.001, close=0.0003; gate state in state->dist_gate_open_L/R
+sample_t apply_distortion(sample_t in, param_t threshold, param_t gain,
+                          state_t *state, bool is_l);
+
 // wobble（#pragma HLS INLINE）
 // is_l=true → advance lfo_phase，用 iir_prev_L
 // is_l=false → hold phase，用 iir_prev_R
@@ -99,9 +124,16 @@ sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
                       param_t lfo_floor, state_t *state, bool is_l);
 ```
 
-### 串接邏輯
+### 串接邏輯（14.9 更新）
 
-串接順序（phase 5）：`in → distortion → wobble → out`，每級後 clamp 到 [−1, +0.9999]。由 `dist_en` / `wobble_en` 控制；兩者皆 true 即串接。
+```
+in → Notch (always) → HPF (if dist_en||wobble_en) → Distortion+NoiseGate (if dist_en) → Wobble (if wobble_en) → out
+```
+
+- **Notch（60 Hz，always-on）**：IIR biquad，r=0.9997，BW≈4.6 Hz，直接消 60 Hz ground hum（r 從 0.9999 降至 0.9997 以縮短暫態 τ：208 ms→69 ms，減少 pick attack 後的 ringing 被 distortion 放大；A 弦 55 Hz 衰減仍 <1 dB，D36）。fresh state 下第一個 sample y[0]=x[0]，不影響 passthrough test。
+- **HPF（Fc≈28 Hz，effect-conditional）**：僅在 `dist_en || wobble_en` 時啟動，截 DC offset 防切換 thump。bypass 維持 true pass（HPF first-sample ≠ input）。
+- **Noise Gate（hysteresis，inside apply_distortion，14.2/14.9）**：open threshold=0.001（−60 dBFS），close threshold=0.0003（−70 dBFS）；gate 開啟後需振幅降到 0.0003 才關閉，防止弦振動衰減時在 0.001 附近反覆開關（chatter）。gate 狀態存於 `state.dist_gate_open_L/R`（D36）。⚠️ 板上實測 gate chatter 仍部分存在，可繼續優化。
+- **Distortion / Wobble**：同 Phase 5 串接，`dist_en` / `wobble_en` 分別控制，兩者皆 true 即串接。
 
 ### Wobble 參數編碼（Phase 3 定案）✅
 
@@ -282,3 +314,5 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 4 | LED 對應定案（gpio_1 led[0/1] = btn preset；gpio_2 rgbleds = sw on/off）；Preset 參數組初訂；axi_gpio_2 base address 定案（0x4003_0000）；RGB LED pins 確認（L15/G17/N15/G14/L14/M15，無衝突）|
 | Phase 3 | `process_sample()` 完整簽章定案；`state_t` 欄位定案（lfo_phase + iir_prev_L/R, ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`；wobble 參數編碼定案（lfo_rate=相位增量，lfo_depth=0–100）；中間運算型別 `ap_fixed<32,2>` 定案；板上音訊驗證 PASS（2026-06-14）|
 | 14.1 wobble 深度優化（2026-06-15）| B_LUT 換成 10–2000 Hz 對數等比（43–7569 Q15）；IIR 升 2nd-order cascade（12 dB/oct）；state_t 加 iir_prev2_L/R；新增 `lfo_floor` AXI-Lite 參數（offset 0x48）；`apply_wobble` 加 `param_t lfo_floor`；btn[2] 循環 wah depth preset A/B/C |
+| 14.2/14.7 noise gate + HPF + notch（2026-06-15）| 新增 `hpf.cpp`（Fc≈28 Hz HPF）、`notch.cpp`（60 Hz biquad notch，初版 r=0.9999）；state_t 擴增至 17 欄（+4 HPF + 8 Notch）；distortion 加 noise gate（0.001 hardcode）；AXI-Lite 位址表**不變** |
+| notch r 調整 + 14.9 gate hysteresis（2026-06-16）| notch r=0.9999→0.9997（τ 208 ms→69 ms，減少 ringing 被 distortion 放大；D36）；noise gate 改 hysteresis（open=0.001，close=0.0003）；`apply_distortion` 加 `state_t*, bool is_l`；state_t 擴增至 19 欄（+2 gate 狀態 bool）；AXI-Lite 位址表**不變** |

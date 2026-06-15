@@ -87,7 +87,9 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - `apply_wobble` 加 `bool is_l`、`param_t lfo_floor`（14.1 新增，wah depth preset）
   - 14.1 優化（2026-06-15）：B_LUT 換成 10–2000 Hz 對數等比；升 2nd-order IIR（12 dB/oct）；新增 `lfo_floor` AXI-Lite 參數（offset 0x48，btn2 切換 A/B/C preset）
   - 14.1 驗證全 PASS（2026-06-15）：HLS C-sim PASS、synthesis II=1、Vivado rebuild、板上三個 preset（A/B/C）音訊驗聽 PASS
-  - **Post-MVP 優化待辦**：distortion 底噪放大（D27）— 見 `docs/decisions.md`
+  - **Post-MVP 14.2/14.7（2026-06-15 實作，板上驗聽 PASS）**：60 Hz notch（r=0.9997，BW≈4.6 Hz，r 從 0.9999 降低以縮短 ringing τ 208 ms→69 ms）+ HPF（Fc≈28 Hz）+ noise gate；state_t 擴增至 19 欄（含 gate hysteresis 狀態 bool L/R）；AXI-Lite 介面不變
+  - **Post-MVP 14.9（2026-06-16 實作）**：noise gate hysteresis（open=0.001，close=0.0003）；板上驗聽 gate chatter 仍存在，可繼續優化
+  - **Post-MVP 14.10/14.11（2026-06-16 記錄）**：13 秒週期茲擦（PS 端原因未查明）；碰弦茲擦（類比前端 EMI，已知限制）
 - ✅ **Phase 4 + 5**：GPIO 控制迴路（sw/btn/LED/RGB LD4+LD5）+ 效果串接 — **MVP 完成**（branch: `feat/gpio`）
   - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset；btn[2] 循環 wah depth preset A/B/C（14.1 新增）
   - RGB LD4/LD5 顯示 switch 狀態；led[0/1] 顯示 preset 強度

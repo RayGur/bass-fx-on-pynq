@@ -487,15 +487,8 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 **症狀**：gain 調高時底噪（noise floor）明顯放大，與 passthrough / wobble 相比差異顯著。  
 **根因**：hard clipping 在 clip 前對全頻訊號（含底噪）做 gain 倍放大；被動 bass 直插 line-in 阻抗不匹配使底噪源頭偏高。  
-**優化方向**（依實作成本排序）：
-
-| 選項 | 成本 | 說明 |
-|------|------|------|
-| 加 noise gate（`\|in\| < noise_thr → out=0`） | 低（`distortion.cpp` 加一個 `if`） | 直接消除底噪；可加 AXI-Lite 參數動態調整門限 |
-| Soft-knee clipping | 中（換 clipping 函式） | 減少截波高諧波，但不解決底噪 |
-| 硬體 DI（demo 佈置） | 不改 IP | 改善阻抗匹配，降低底噪源頭 |
-
-**建議**：先加 noise gate，實作最簡單且效果直接。若新增 `noise_threshold` 為 AXI-Lite 參數，需更新 `INTERFACE.md` 並通知 Claire。
+**修法（2026-06-15 實作，板上待驗）**：在 `apply_distortion()` gain 乘法之前加 noise gate：`|in| < 0.001（−60 dBFS）→ return 0`。threshold hardcode（D31）。AXI-Lite 介面不變。與 14.7 notch filter 組合為雙重防護。  
+**C-Sim**：待 Ray 跑 `run csim_design` 確認 PASS。**板上驗證**：高 gain 不撥弦 → 靜默；撥弦 → 音色不變。
 
 ### 14.3 RGB LED（LD4/LD5）亮度過高（板上實測，2026-06-14）
 
@@ -550,18 +543,60 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 ---
 
-### 14.7 Ground loop 雜訊 + 前置 HPF 優化（或許可做）
+### 14.7 Ground loop 雜訊 + 數位消除（2026-06-15 實作，板上待驗）
 
-**現象**：接上 bass 後有些微底噪；手碰 PYNQ 接地腳與 bass 弦（地）時雜訊消失，判斷為 **ground loop hum**（50/60 Hz 及諧波），與 14.2 distortion 放大雜訊有關聯。
+**現象**：接上 bass 後有底噪；確認頻率為純 **60 Hz（±2 Hz）**，台灣電源頻率。  
+**方向 A（接地線，2026-06-15 試驗）**：PYNQ 機殼地 ↔ bass 導線屏蔽層接跳線。結果：只有些微改善，hum 仍可聞。判定：非純粹 ground loop，可能含 EMI（空間感應）或電源共模雜訊。  
+**方向 B（數位，2026-06-15 實作）**：
 
-**方向 A — 類比接地（最直接）**：拉一條線連接 PYNQ 機殼地與 bass 導線地，消除 ground loop 本身。Ray 已評估可行。
+| 元件 | 說明 | 決策 |
+|------|------|------|
+| **60 Hz Notch（r=0.9999，BW≈1.5 Hz）** | 直接消 60 Hz hum；always-on；A 弦（55 Hz）不受影響（D28） | 主修法 |
+| **HPF（Fc≈28 Hz）** | 截 DC offset 防效果切換 thump；effect-enable 時才啟動（D29/D30） | 輔助 |
+| **Noise Gate（0.001，inside distortion）** | 靜音期殘留 hum 不被 gain 放大（14.2 組合方案，D31） | 輔助 |
 
-**方向 B — 數位前置 HPF（輔助優化，順手可做）**：在 `process_sample()` 最前端串接一階 IIR 高通濾波器（Fc ≈ 25–30 Hz），截掉 DC offset 與超低頻雜訊，使 distortion 不會把這段雜訊一起放大。
-- 只需 2 個乘法器（DSP48E1 資源成本極低）
-- bass 最低音（低 E ≈ 41 Hz）基頻影響可忽略
-- 若想更精準打 50/60 Hz：改用二階 IIR notch filter
+**新增檔案**：`hls/effect_ip/notch.cpp`、`hls/effect_ip/hpf.cpp`（Ray 需在 Vitis HLS 專案 Add Source）。  
+**AXI-Lite 介面不變**。DSP 預估 +8（notch ×6 + HPF ×2），II=1 維持。  
+**C-Sim**：待 Ray 跑 `run csim_design` 確認 PASS。**板上驗證**：撥弦時 60 Hz hum 明顯減少；bypass 模式訊號不受影響。
 
-**優先序**：先試方向 A（一條線）；若底噪仍殘留再考慮方向 B。
+---
+
+### 14.9 Noise gate 導致 sustain 裂開（2026-06-15 板上實測，已修）
+
+**現象**：撥弦後 hold 住，音色在衰減過程中「裂開」，從類重金屬 breakdown 到越來越碎，最後消失。在 distortion high/low 都會發生。  
+**根因**：單一 threshold 的 hard gate（0.001）在弦振動振幅衰減到 0.001 附近時，正弦波的峰值 > 0.001（gate 開）而零點附近 < 0.001（gate 關），每週期開關兩次，把波形切成碎片，產生大量諧波，聽起來就是逐漸裂開的感覺。  
+**修法（2026-06-15）**：改為 hysteresis gate：
+- Open threshold = 0.001（gate 開啟門檻，不變）
+- Close threshold = 0.0003（−70 dBFS；gate 開啟後，振幅降到此值才關閉）
+
+state_t 新增 `dist_gate_open_L / dist_gate_open_R` 兩個 bool 欄位（17 → 19 欄）；apply_distortion 加 `state_t *state, bool is_l` 參數。  
+**狀態**：⚠️ 已實作 hysteresis gate，板上驗聽（2026-06-16）改善不明顯，gate chatter 仍存在。可繼續優化方向：envelope follower（對振幅包絡做判斷而非瞬時值）、更長的 hold-off timer（gate 關閉後 N samples 內不再開啟）、或提高 close threshold（0.0003 → 0.0005）。
+
+---
+
+### 14.10 每隔約 13 秒出現兩聲連續茲擦（2026-06-15 板上實測）
+
+**現象**：拾音器關掉、訊號極小時，每隔約 13 秒會有兩聲連續茲擦，兩聲間隔約 0.5 秒。聲音像 60 Hz 混和附近其他頻率，有電子信號波感。  
+**初步判斷**：週期性過於規律，不像訊號雜訊，推測為 PS 端行為（DMA buffer timeout、OS housekeeping interrupt、或 `audio_dma.c` periodic restart）。  
+**狀態**：🔍 原因未查明，需在 PS 端 debug（可加 printf log 或 GPIO trigger 抓時序）；優先度低。
+
+---
+
+### 14.11 碰弦 / 碰地產生單次茲擦（2026-06-15 板上實測）
+
+**現象**：有 distortion 時，用手碰 bass 弦或接地點（琴身地、PYNQ 地）會產生一聲茲擦。弦的聲音比接地點明顯。  
+**根因**：人體攜帶 60 Hz 共模干擾，碰到弦時把干擾注入 bass 的接地迴路，產生瞬間衝擊脈衝，超過 gate open threshold (0.001) → distortion → 茲擦。  
+**本質**：類比前端問題（被動式拾音器無共模抑制），HLS 端難以根除。接地線有 20% 改善，但手不碰弦就不會有此問題。  
+**狀態**：📋 已知限制，不排期修。
+
+---
+
+### 14.8 Wobble + Distortion 同時開啟時音色失去圓潤感（2026-06-15 板上實測）
+
+**現象**：Wobble 單獨開啟時音色圓潤（設計目標，wah-like sweep）；與 Distortion 同時開啟後，圓潤感消失，音色偏硬。  
+**根因假設**：Hard clipping 在基頻上疊加大量奇次諧波；這些諧波送進 wobble IIR sweep 後，展頻後的失真諧波混合 LFO 掃頻，破壞了單純 wah 的頻率包絡感知。  
+**暫緩處理**：MVP 已完成，此為音色調整問題，不影響功能正確性。後續可考慮調整 signal chain 順序（wobble → distortion vs. 現行 distortion → wobble）或加入 soft clipping。  
+**狀態**：⏸ 記錄待評估，未排期。
 
 ---
 
