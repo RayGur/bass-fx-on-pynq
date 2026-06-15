@@ -81,15 +81,16 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - `ap_fixed<32,6>` 中間型別；threshold Q1.23 raw bit decode（需 `.range()`）
   - C Sim PASS（13 cases）、RTL Synthesis PASS（DSP×2, LUT 1%, 6.57 ns）
   - 技術債：threshold decode 記錄於 `docs/phase2.md`
-- ✅ **Phase 3**：wobble（一階 IIR + LFO 掃頻）— 完成（整合於 Phase 6 branch）
-  - Claire 演算法（B_LUT 16 entries Q15，triangle LFO，一階 IIR）整合進 Phase 6 AXI-Stream HLS
-  - `state_t` 分 `iir_prev_L` / `iir_prev_R`（ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`
-  - HLS 合成：II=1 達成；timing violation -3.08 ns 在 AXI-Lite wrapper（Vivado P&R 可解）
-  - `wobble_dma_test.py` 板上驗證 PASS（L[0]=b×in 精確，state 跨 DMA 保留）
-  - 實際音訊測試 PASS（`audio_dma.c` + codec，lfo_rate/depth 可熱改）
-  - **Post-MVP 優化待辦**：wobble 深度不足（D26）、distortion 底噪放大（D27）— 見 `docs/decisions.md`
+- ✅ **Phase 3**：wobble（2nd-order IIR cascade + LFO 掃頻）— 完成（整合於 Phase 6 branch；14.1 升級）
+  - Claire 演算法（B_LUT 16 entries Q15，triangle LFO）整合進 Phase 6 AXI-Stream HLS
+  - `state_t` 分 `iir_prev_L/R`（stage-1）+ `iir_prev2_L/R`（stage-2，14.1 新增）
+  - `apply_wobble` 加 `bool is_l`、`param_t lfo_floor`（14.1 新增，wah depth preset）
+  - 14.1 優化（2026-06-15）：B_LUT 換成 10–2000 Hz 對數等比；升 2nd-order IIR（12 dB/oct）；新增 `lfo_floor` AXI-Lite 參數（offset 0x48，btn2 切換 A/B/C preset）
+  - **待驗證**：14.1 改動需 Ray 重跑 HLS C-sim、synthesis（確認 II=1）、Vivado rebuild + 板上驗聽
+  - 實際音訊測試 PASS（原版；14.1 後需重驗）
+  - **Post-MVP 優化待辦**：distortion 底噪放大（D27）— 見 `docs/decisions.md`
 - ✅ **Phase 4 + 5**：GPIO 控制迴路（sw/btn/LED/RGB LD4+LD5）+ 效果串接 — **MVP 完成**（branch: `feat/gpio`）
-  - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset
+  - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset；btn[2] 循環 wah depth preset A/B/C（14.1 新增）
   - RGB LD4/LD5 顯示 switch 狀態；led[0/1] 顯示 preset 強度
   - axi_gpio_2（0x4003_0000）新增至 BD；hw_cons.xdc 補 6 pin（port: `rgbleds_tri_o_tri_o`）
   - **前置**：每次執行前需先 `sudo python3 codec_init.py`（載入 overlay + 初始化 codec）

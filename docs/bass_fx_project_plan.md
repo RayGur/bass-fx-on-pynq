@@ -470,16 +470,18 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 **症狀**：wobble 掃動效果太細微，與 distortion 串接時尤為明顯。  
 **根因**：B_LUT 低端 fc≈200 Hz 高於 bass 基音（41–98 Hz），LFO 最低值時基音仍在 passband；加上一階 IIR（6 dB/oct）斜率太緩，開合幅度有限。  
-**處置（2026-06-15）**：同時執行 B_LUT 調整 + 升 2nd-order IIR cascade。
+**處置（2026-06-15）**：同時執行 B_LUT 調整 + 升 2nd-order IIR cascade + 新增 lfo_floor runtime 切換。
 
 | 項目 | 說明 |
 |------|------|
 | B_LUT 新範圍 | 10–2000 Hz 對數等比（原 200–9300 Hz）；`wobble.cpp` |
 | 2nd-order cascade | 串聯兩級一階 IIR → 12 dB/oct；state_t 加 `iir_prev2_L/R` |
 | 效果 | 80 Hz bass 在 LFO 最低值時衰減 ~36 dB（原 ~0 dB） |
-| 介面影響 | state_t 為 HLS 內部 static，不動 AXI-Lite 寄存器表 |
+| `lfo_floor` 參數 | 新增 AXI-Lite 參數（offset 0x48 待 synthesis 確認）；控制 B_LUT 最小 index，即波谷截止頻率 |
+| btn2 preset cycle | A（floor=6，fc≈83 Hz，−6 dB）→ B（floor=4，fc≈41 Hz，−18 dB）→ C（floor=0，fc=10 Hz，−36 dB）→ A |
+| 介面影響 | state_t 為 HLS 內部 static；`lfo_floor` 為新增 AXI-Lite 暫存器（需 INTERFACE.md + re-synthesis）|
 
-**待驗證**：HLS C-sim PASS → synthesis II=1 → 板上音訊驗聽。
+**待驗證**：HLS C-sim PASS → synthesis II=1（確認 lfo_floor offset 0x48）→ Vivado rebuild → 板上音訊驗聽三個 preset。
 
 ### 14.2 Distortion 高 gain 雜訊放大（D27）
 

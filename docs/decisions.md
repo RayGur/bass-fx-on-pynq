@@ -478,7 +478,25 @@
   - **B_LUT 新範圍**：10–2000 Hz 對數等比（公式 `b = 1 - exp(-2π·fc/48000)`），16 點。
   - **state_t 擴充**：新增 `iir_prev2_L` / `iir_prev2_R`（純 HLS 內部 static，不影響 AXI-Lite 介面合約）。
   - **修改檔案**：`wobble.cpp`（B_LUT + 2nd-order IIR）、`effect_ip.h`（state_t）、`process_sample.cpp`（初始化）、`tb_process_sample.cpp`（testbench 初始化）。
-  - **待驗證**：HLS C-sim（13 cases PASS）、synthesis II=1、板上音訊驗聽。
+  - **後續追加（同日）**：實測波谷無聲 → 新增 `lfo_floor` AXI-Lite 參數（見 D28）；btn2 循環三種 wah depth preset。
+  - **待驗證**：HLS C-sim（13 cases PASS）、synthesis II=1、板上音訊驗聽三個 preset（A/B/C）。
+
+---
+
+## D28. wah depth preset runtime 切換：lfo_floor 參數設計（2026-06-15）
+
+- **背景**：14.1 fix 後 B_LUT 低端 fc=10 Hz，2nd-order 在波谷時把 bass 基音壓到 ~−36 dB（近無聲）。實測偏好保留波谷聲音，需能在不同深度間切換。
+- **選項比較**：
+  - A）多張 B_LUT + `wah_mode` 選擇器：每個 preset 有獨立 LUT，切換乾淨，但 HLS 資源用多一倍（16×N 個 ROM entry），且需再加一個 AXI-Lite 參數。
+  - B）`lfo_floor` 參數（最小 LUT index）：保留現有單張 10–2000 Hz 寬範圍 B_LUT，靠 `lut_idx = max(lfo_floor, computed_idx)` 抬高波谷；只需一個新參數，HLS 資源不增。
+- **決定**：選 B（`lfo_floor`）。
+- **理由**：HLS 資源省一半；B_LUT 保留完整範圍方便未來調整；PS 端可用任意整數（0–15）設定波谷，不限三段。
+- **Preset 對應**（btn2 循環 A→B→C）：
+  - A（default）：floor=6，fc≈83 Hz，波谷 −6 dB，bass 可聽
+  - B：floor=4，fc≈41 Hz，波谷 −18 dB，很暗
+  - C：floor=0，fc=10 Hz，波谷 −36 dB，近無聲
+- **AXI-Lite offset**：0x48（HLS 按參數順序分配，synthesis 後由 `csynth.rpt` 確認）。
+- **影響範圍**：`wobble.cpp`（floor clamping）、`effect_ip.h`（所有簽章）、`process_sample.cpp`（pragma + 傳遞）、`tb_process_sample.cpp`（call sites）、`ps/audio_dma.c`（offset + preset + btn2）、`docs/INTERFACE.md`（AXI-Lite 表、btn[2]）。
 
 ---
 
@@ -497,5 +515,4 @@
 
 ## 待補決策(後續 Phase 產生)
 
-- low/high 參數的實際數值（Phase 4，調出好聽範圍）。
-- Phase 4 按鈕對應的效果切換邏輯與預設參數組設計。
+- distortion noise gate 參數（14.2，noise_threshold 數值需板上調整）。
