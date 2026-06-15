@@ -86,8 +86,7 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - `state_t` 分 `iir_prev_L/R`（stage-1）+ `iir_prev2_L/R`（stage-2，14.1 新增）
   - `apply_wobble` 加 `bool is_l`、`param_t lfo_floor`（14.1 新增，wah depth preset）
   - 14.1 優化（2026-06-15）：B_LUT 換成 10–2000 Hz 對數等比；升 2nd-order IIR（12 dB/oct）；新增 `lfo_floor` AXI-Lite 參數（offset 0x48，btn2 切換 A/B/C preset）
-  - **待驗證**：14.1 改動需 Ray 重跑 HLS C-sim、synthesis（確認 II=1）、Vivado rebuild + 板上驗聽
-  - 實際音訊測試 PASS（原版；14.1 後需重驗）
+  - 14.1 驗證全 PASS（2026-06-15）：HLS C-sim PASS、synthesis II=1、Vivado rebuild、板上三個 preset（A/B/C）音訊驗聽 PASS
   - **Post-MVP 優化待辦**：distortion 底噪放大（D27）— 見 `docs/decisions.md`
 - ✅ **Phase 4 + 5**：GPIO 控制迴路（sw/btn/LED/RGB LD4+LD5）+ 效果串接 — **MVP 完成**（branch: `feat/gpio`）
   - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset；btn[2] 循環 wah depth preset A/B/C（14.1 新增）

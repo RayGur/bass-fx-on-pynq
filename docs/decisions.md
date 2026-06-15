@@ -479,7 +479,7 @@
   - **state_t 擴充**：新增 `iir_prev2_L` / `iir_prev2_R`（純 HLS 內部 static，不影響 AXI-Lite 介面合約）。
   - **修改檔案**：`wobble.cpp`（B_LUT + 2nd-order IIR）、`effect_ip.h`（state_t）、`process_sample.cpp`（初始化）、`tb_process_sample.cpp`（testbench 初始化）。
   - **後續追加（同日）**：實測波谷無聲 → 新增 `lfo_floor` AXI-Lite 參數（見 D28）；btn2 循環三種 wah depth preset。
-  - **待驗證**：HLS C-sim（13 cases PASS）、synthesis II=1、板上音訊驗聽三個 preset（A/B/C）。
+  - **驗證（2026-06-15）**：HLS C-sim PASS、synthesis II=1（lfo_floor offset 0x48 確認）、Vivado rebuild PASS、板上三個 preset（A/B/C）音訊驗聽全 PASS。
 
 ---
 

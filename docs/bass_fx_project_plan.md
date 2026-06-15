@@ -481,7 +481,7 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 | btn2 preset cycle | A（floor=6，fc≈83 Hz，−6 dB）→ B（floor=4，fc≈41 Hz，−18 dB）→ C（floor=0，fc=10 Hz，−36 dB）→ A |
 | 介面影響 | state_t 為 HLS 內部 static；`lfo_floor` 為新增 AXI-Lite 暫存器（需 INTERFACE.md + re-synthesis）|
 
-**待驗證**：HLS C-sim PASS → synthesis II=1（確認 lfo_floor offset 0x48）→ Vivado rebuild → 板上音訊驗聽三個 preset。
+**驗證（2026-06-15）**：HLS C-sim PASS、synthesis II=1（lfo_floor offset 0x48 確認）、Vivado rebuild PASS、板上三個 preset（A/B/C）音訊驗聽全 PASS。
 
 ### 14.2 Distortion 高 gain 雜訊放大（D27）
 
