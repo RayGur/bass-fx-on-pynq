@@ -106,7 +106,7 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
 - 🚧 **feat/ui**：PC-side GUI（Tkinter + paramiko）— **開發中 2026-06-16**（branch: `feat/ui`）
   - **14.5** ✅：`start.sh` 合一啟動（codec_init.py + audio_dma），root-aware 不重複 sudo
   - **14.6** ✅：`audio_dma.c` 清理（移除 diag/cross-verify/sentinel），加 `-DNDEBUG`，compile PASS
-  - **GPIO 共存** ✅：`access("/tmp/bass_ui_active")` 檢查，UI 啟動時跳過 sw GPIO polling
+  - **GPIO 共存（雙向）** ✅：sw GPIO 永遠寫入 Effect IP（GPIO 為 master），UI stomp 顯示 sw 即時狀態；stomp click 仍可寫入但 ~5.33 ms 內被 GPIO 覆蓋
   - **ctrl_client.py** ✅：板上 AXI-Lite 控制代理，STATE stdout 100ms 輸出，sentinel 管理；板上 sudo -S 測試 PASS
   - **bass_ui.py** ✅：吉他踏板盤 Tkinter GUI，paramiko SSH 雙 channel，ssh 連線測試 PASS
   - 板上工作目錄：`~/bass-fx/ui_dev/`；compile：`gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma`
