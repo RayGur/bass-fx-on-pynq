@@ -97,6 +97,12 @@ def read_gpio_sw():
 # lfo_floor → wah preset index table
 _WAH_FLOOR_TO_IDX = {6: 0, 4: 1, 0: 2}
 
+# Preset register values (must match audio_dma.c defines)
+_DIST_THR_LOW     = int(0.5 * (1 << 23))   # 4194304
+_DIST_THR_HIGH    = int(0.2 * (1 << 23))   # 1677722
+_WOBBLE_RATE_SLOW = 89478
+_WOBBLE_RATE_FAST = 357914
+
 
 def handle_command(line):
     global dist_preset, wobble_preset, wah_depth
@@ -179,9 +185,22 @@ def main():
 
     # Main polling loop: output STATE every 100 ms
     while True:
+        global dist_preset, wobble_preset, wah_depth
         sw  = read_gpio_sw()
         sw1 = (sw >> 1) & 1
         sw0 = sw & 1
+
+        # Readback effect registers to catch btn[0/1/2] preset changes from audio_dma
+        with _lock:
+            thr     = _reg_read(_effect_mm, OFFSET_THRESHOLD)
+            rate    = _reg_read(_effect_mm, OFFSET_LFO_RATE)
+            floor_v = _reg_read(_effect_mm, OFFSET_LFO_FLOOR) & 0xF
+        if   thr == _DIST_THR_HIGH:    dist_preset = 1
+        elif thr == _DIST_THR_LOW:     dist_preset = 0
+        if   rate == _WOBBLE_RATE_FAST: wobble_preset = 1
+        elif rate == _WOBBLE_RATE_SLOW: wobble_preset = 0
+        wah_depth = _WAH_FLOOR_TO_IDX.get(floor_v, wah_depth)
+
         sys.stdout.write(
             "STATE sw={}{} dist_preset={} wobble_preset={} wah={}\n".format(
                 sw1, sw0, dist_preset, wobble_preset, wah_depth))

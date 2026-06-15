@@ -609,18 +609,33 @@ class App:
             print(f"[bass_ui] state reader: {exc}")
 
     def _parse_state(self, line):
-        """Parse 'STATE sw=01 ...' and update UI from GPIO sw state."""
+        """Parse 'STATE sw=01 dist_preset=0 wobble_preset=1 wah=0' and update UI."""
         parts = {}
         for tok in line.split()[1:]:
             if "=" in tok:
                 k, v = tok.split("=", 1)
                 parts[k] = v
+
+        # sw → stomp buttons (GPIO is master)
         sw = parts.get("sw", "--")
         self.root.after(0, lambda s=sw: self.sw_var.set(f"SW:{s}"))
-        # Update stomp buttons when sw changes (GPIO is master)
         if sw != self._last_sw and len(sw) == 2 and sw.isdigit():
             self._last_sw = sw
             self.root.after(0, lambda s=sw: self._sync_sw_to_ui(s))
+
+        # preset indices → button highlights + knobs (btn[0/1/2] changes)
+        try:
+            dp  = int(parts.get("dist_preset",   -1))
+            wp  = int(parts.get("wobble_preset",  -1))
+            wah = int(parts.get("wah",            -1))
+            if dp in (0, 1) and dp != self.dist_preset_idx:
+                self.root.after(0, lambda i=dp:  self._set_dist_preset_btn(i))
+            if wp in (0, 1) and wp != self.wobble_preset_idx:
+                self.root.after(0, lambda i=wp:  self._set_wobble_preset_btn(i))
+            if wah in (0, 1, 2) and wah != self.wah_idx:
+                self.root.after(0, lambda i=wah: self._set_wah_preset_btn(i))
+        except ValueError:
+            pass
 
     def _sync_sw_to_ui(self, sw_str):
         """Reflect board GPIO sw[1:0] in stomp button state (no commands sent)."""
@@ -633,6 +648,33 @@ class App:
             self.wobble_en.set(sw1)
         finally:
             self._gpio_updating = False
+
+    def _set_dist_preset_btn(self, idx):
+        """Highlight dist preset button and sync knobs (no command sent)."""
+        self.dist_preset_idx = idx
+        for j, b in enumerate(self.dist_preset_btns):
+            b.config(bg=C_BTN_ON if j == idx else C_BTN,
+                     fg=C_ACCENT if j == idx else C_DIM)
+        p = DIST_PRESETS[idx]
+        self.thr_knob.set_value(p["threshold"], notify=False)
+        self.gain_knob.set_value(p["gain"],      notify=False)
+
+    def _set_wobble_preset_btn(self, idx):
+        """Highlight wobble preset button and sync knobs (no command sent)."""
+        self.wobble_preset_idx = idx
+        for j, b in enumerate(self.wobble_preset_btns):
+            b.config(bg=C_BTN_ON if j == idx else C_BTN,
+                     fg=C_ACCENT if j == idx else C_DIM)
+        q = WOBBLE_PRESETS[idx]
+        self.rate_knob.set_value(q["lfo_rate"],   notify=False)
+        self.depth_knob.set_value(q["lfo_depth"], notify=False)
+
+    def _set_wah_preset_btn(self, idx):
+        """Highlight wah preset button (no command sent)."""
+        self.wah_idx = idx
+        for j, b in enumerate(self.wah_btns):
+            b.config(bg=C_BTN_ON if j == idx else C_BTN,
+                     fg=C_ACCENT if j == idx else C_DIM)
 
     def _stop_fx(self):
         self._stop_ev.set()
