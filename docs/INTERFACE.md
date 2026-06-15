@@ -53,13 +53,15 @@ out = clamp(amp, -thr, +thr);           // hard clip
 | `hls/effect_ip/distortion.cpp` | Ray | distortion hard clipping 演算法 |
 | `hls/effect_ip/wobble.cpp` | Claire | wobble IIR + LFO 演算法（Phase 3 整合）|
 
-### 跨 sample 狀態 `state_t`（定案）
+### 跨 sample 狀態 `state_t`（14.1 更新）
 
 ```cpp
 typedef struct {
-    ap_uint<32>    lfo_phase;    // LFO 相位累加器，自然 wrap at 2^32
-    ap_fixed<32,2> iir_prev_L;  // 左聲道 IIR 前一輸出（unclamped y，Q2.30）
-    ap_fixed<32,2> iir_prev_R;  // 右聲道 IIR 前一輸出（unclamped y，Q2.30）
+    ap_uint<32>    lfo_phase;     // LFO 相位累加器，自然 wrap at 2^32
+    ap_fixed<32,2> iir_prev_L;   // stage-1 IIR 前一輸出，左聲道（unclamped y，Q2.30）
+    ap_fixed<32,2> iir_prev_R;   // stage-1 IIR 前一輸出，右聲道
+    ap_fixed<32,2> iir_prev2_L;  // stage-2 IIR 前一輸出，左聲道（2nd-order cascade，14.1）
+    ap_fixed<32,2> iir_prev2_R;  // stage-2 IIR 前一輸出，右聲道
 } state_t;
 ```
 
@@ -75,7 +77,8 @@ void process_sample(
     int     n_samples,
     bool    dist_en,   bool    wobble_en,
     param_t threshold, param_t gain,
-    param_t lfo_rate,  param_t lfo_depth
+    param_t lfo_rate,  param_t lfo_depth,
+    param_t lfo_floor   // 14.1 新增：wah depth preset（minimum B_LUT index，0–15）
 );
 
 // 核心運算（一個 stereo pair，testbench 直接呼叫）
@@ -84,14 +87,16 @@ void process_sample_core(
     bool dist_en, bool wobble_en,
     param_t threshold, param_t gain,
     param_t lfo_rate, param_t lfo_depth,
+    param_t lfo_floor,  // 14.1 新增
     state_t *state
 );
 
 // wobble（#pragma HLS INLINE）
 // is_l=true → advance lfo_phase，用 iir_prev_L
 // is_l=false → hold phase，用 iir_prev_R
+// lfo_floor → clamps minimum lut_idx（wah depth preset）
 sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
-                      state_t *state, bool is_l);
+                      param_t lfo_floor, state_t *state, bool is_l);
 ```
 
 ### 串接邏輯
@@ -105,8 +110,11 @@ sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
 | `lfo_rate` | `int`（32-bit）| LFO 相位每個 L-sample 的增量；`f_Hz = lfo_rate × 48000 / 2^32` | `89478` → 1 Hz；`357914` → 4 Hz |
 | `lfo_depth` | `int`（32-bit）| 0–100，控制 B_LUT 查表索引範圍 | `100` → 最大掃動深度 |
 
-**B_LUT**：16 entries，Q15 格式的 IIR 係數 b（858–23061，對應 b ≈ 0.026–0.704）。  
-**LFO 波形**：32-bit 相位累加器，bit31 作方向，bits[30:23] 作三角波 frac（triangle wave）。
+| `lfo_floor` | `int`（32-bit）| 0–15，B_LUT 最小查表 index；`lut_idx = max(lfo_floor, computed_idx)` | `6` → preset A（fc≈83 Hz 波谷）；`4` → B；`0` → C（完全深） |
+
+**B_LUT**：16 entries，Q15 格式的 IIR 係數 b（14.1 更新：43–7569，對應 fc=10–2000 Hz，對數等比）。  
+**LFO 波形**：32-bit 相位累加器，bit31 作方向，bits[30:23] 作三角波 frac（triangle wave）。  
+**IIR 結構**（14.1 更新）：2nd-order cascade（兩級一階串聯），12 dB/oct，state_t 增加 iir_prev2_L/R。
 
 ---
 
@@ -155,6 +163,7 @@ PS 寫入 → PL 即時讀取,音訊不中斷。
 | `gain` | PS→PL | `0x30` | distortion 輸入增益，純整數 1–20 |
 | `lfo_rate` | PS→PL | `0x38` | wobble 掃動速率（32-bit int） |
 | `lfo_depth` | PS→PL | `0x40` | wobble 掃動範圍（32-bit int） |
+| `lfo_floor` | PS→PL | `0x48` | wah depth preset：B_LUT 最小 index（0–15）；0=深（fc=10 Hz）、4=中（fc≈41 Hz）、6=淺（fc≈83 Hz，預設）|
 
 ### Effect IP — Phase 6 AXI-Stream 介面 ✅
 
@@ -222,7 +231,7 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | sw[1] | M19 | wobble on / off(兩者同開 = 串接) |
 | btn[0] | D19 | 短按 toggle:distortion low ↔ high |
 | btn[1] | D20 | 短按 toggle:wobble low ↔ high |
-| btn[2] | L20 | 保留未用 |
+| btn[2] | L20 | 短按循環：wah depth preset A→B→C（14.1） |
 | btn[3] | L19 | 保留未用 |
 
 ### 輸出:LED(狀態顯示)（Phase 4 定案）✅
@@ -272,3 +281,4 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | Phase 6 BUG D25 | Zynq HP0 內部 64-bit 匯流排；`PCW_S_AXI_HP0_DATA_WIDTH=32` 只改 HWH 不改硬體 → WSTRB=0x0F per 64-bit beat → 每隔一個 32-bit word 不寫 DDR；修正：Vivado PS7 HP0 Data Width 改為 64，重建 bitstream（見 D25）；板上驗證 total written=512 ✅ |
 | Phase 4 | LED 對應定案（gpio_1 led[0/1] = btn preset；gpio_2 rgbleds = sw on/off）；Preset 參數組初訂；axi_gpio_2 base address 定案（0x4003_0000）；RGB LED pins 確認（L15/G17/N15/G14/L14/M15，無衝突）|
 | Phase 3 | `process_sample()` 完整簽章定案；`state_t` 欄位定案（lfo_phase + iir_prev_L/R, ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`；wobble 參數編碼定案（lfo_rate=相位增量，lfo_depth=0–100）；中間運算型別 `ap_fixed<32,2>` 定案；板上音訊驗證 PASS（2026-06-14）|
+| 14.1 wobble 深度優化（2026-06-15）| B_LUT 換成 10–2000 Hz 對數等比（43–7569 Q15）；IIR 升 2nd-order cascade（12 dB/oct）；state_t 加 iir_prev2_L/R；新增 `lfo_floor` AXI-Lite 參數（offset 0x48）；`apply_wobble` 加 `param_t lfo_floor`；btn[2] 循環 wah depth preset A/B/C |
