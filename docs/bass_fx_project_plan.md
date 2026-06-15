@@ -498,14 +498,7 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 
 **症狀**：LD4/LD5 全彩（R+G+B 三 channel 同亮）太刺眼，demo 環境下不舒適。  
 **根因**：`audio_dma.c` 目前驅動全部三個 channel（`RGBLED_LD4=0x07`，`RGBLED_LD5=0x38`）。  
-**優化方向**：
-
-| 選項 | 成本 | 說明 |
-|------|------|------|
-| 只驅一個 channel（如綠色 bit1/bit4）| 低（改兩個 `#define`，重編譯）| 亮度降至約 1/3，顏色變單色 |
-| 驅兩個 channel | 低 | 亮度降至約 2/3 |
-
-**建議**：先試單 channel（綠），不滿意再調。無需重合成 bitstream。
+**處置（2026-06-15）**：改為只驅綠色單 channel（`RGBLED_LD4=0x02` bit1=G17，`RGBLED_LD5=0x10` bit4=L14）。仍偏亮但在可接受範圍，暫不繼續調整。無需重合成 bitstream。
 
 ### 14.4 高 gain + 串接時外接主動式喇叭 crash（板上實測，2026-06-14）
 

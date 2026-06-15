@@ -59,9 +59,10 @@
 #define GPIO_TRI2  0x00C  // ch2 direction
 
 // RGB LED bit masks (gpio2)
-// bits[2:0] → LD4 (pins L15/G17/N15); bits[5:3] → LD5 (pins G14/L14/M15)
-#define RGBLED_LD4 0x07u
-#define RGBLED_LD5 0x38u
+// bits[2:0] → LD4 (B=L15/G=G17/R=N15); bits[5:3] → LD5 (B=G14/G=L14/R=M15)
+// Use green channel only (bit1=LD4G, bit4=LD5G) to reduce brightness
+#define RGBLED_LD4 0x02u
+#define RGBLED_LD5 0x10u
 
 // ── Effect IP (process_sample) AXI-Lite offsets ──────────────
 #define EFFECT_CTRL      0x00 // bit0=AP_START, bit7=AUTO_RESTART
