@@ -14,10 +14,21 @@ void process_sample_core(
     sample_t sig_l = in_l;
     sample_t sig_r = in_r;
 
-    // --- distortion (Phase 2) ---
+    // --- notch (14.7): always applied; 60 Hz notch, BW≈1.5 Hz ---
+    sig_l = apply_notch(sig_l, /*is_l=*/true,  state);
+    sig_r = apply_notch(sig_r, /*is_l=*/false, state);
+
+    // --- HPF (14.7): DC offset removal, Fc≈28 Hz; effect-conditional ---
+    // bypass (both off) stays true pass (HPF first-sample ≠ input, breaks exact check)
+    if (dist_en || wobble_en) {
+        sig_l = apply_hpf(sig_l, /*is_l=*/true,  state);
+        sig_r = apply_hpf(sig_r, /*is_l=*/false, state);
+    }
+
+    // --- distortion (Phase 2, hysteresis noise gate inside apply_distortion) ---
     if (dist_en) {
-        sig_l = apply_distortion(sig_l, threshold, gain);
-        sig_r = apply_distortion(sig_r, threshold, gain);
+        sig_l = apply_distortion(sig_l, threshold, gain, state, /*is_l=*/true);
+        sig_r = apply_distortion(sig_r, threshold, gain, state, /*is_l=*/false);
     }
 
     // --- wobble (Phase 3) ---
@@ -55,7 +66,7 @@ void process_sample(
 #pragma HLS INTERFACE s_axilite port=lfo_floor  bundle=ctrl
 #pragma HLS INTERFACE s_axilite port=return     bundle=ctrl
 
-    static state_t state = {0, 0, 0, 0, 0};
+    static state_t state = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
     // Loop over individual 32-bit words (n_samples*2 total: L0,R0,L1,R1,...).
     // One read + one write per iteration → achieves II=1.
@@ -70,14 +81,25 @@ void process_sample(
         sample_t in_s, out_s;
         in_s.range(23, 0) = pkt.data.range(23, 0);
 
+        bool is_l = (i % 2 == 0);
+
+        // --- notch (14.7): 60 Hz biquad, always applied ---
+        in_s = apply_notch(in_s, is_l, &state);
+
+        // --- HPF (14.7): Fc≈28 Hz, only when an effect is enabled ---
+        if (dist_en || wobble_en) {
+            in_s = apply_hpf(in_s, is_l, &state);
+        }
+
+        // --- distortion (Phase 2, hysteresis noise gate inside apply_distortion) ---
         if (dist_en) {
-            out_s = apply_distortion(in_s, threshold, gain);
+            out_s = apply_distortion(in_s, threshold, gain, &state, is_l);
         } else {
             out_s = in_s;
         }
+
         // --- wobble (Phase 3) ---
         if (wobble_en) {
-            bool is_l = (i % 2 == 0);
             out_s = apply_wobble(out_s, lfo_rate, lfo_depth, lfo_floor, &state, is_l);
         }
 
