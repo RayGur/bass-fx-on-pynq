@@ -471,6 +471,14 @@
   - C）加諧振（Q factor）：在截止頻率附近加 boost，wah 感更強，但設計複雜度大增。
   - **建議先試 B**：修改 B_LUT 成本最低（純軟體），無需改 HLS 架構，不影響 II。
 - **影響範圍**：`hls/effect_ip/wobble.cpp`（B_LUT 調整）或 `process_sample.cpp`（2nd-order state 擴充）。
+- **處置（2026-06-15，14.1 fix）**：同時執行 A + B，理由如下：
+  - 實測確認問題本質是「震幅不足」而非頻率偏移：低頻確有波動，但開合幅度太小。
+  - 根因一（B_LUT 低端 fc≈200 Hz 高於 bass 基音 41–98 Hz）為主因：當 LFO 在最低值時，bass 基音仍在 passband，未被衰減，所以「有波動但不夠深」。
+  - 同時採用 2nd-order cascade 增加斜率，讓開合幅度更明顯（36 dB vs 18 dB）。
+  - **B_LUT 新範圍**：10–2000 Hz 對數等比（公式 `b = 1 - exp(-2π·fc/48000)`），16 點。
+  - **state_t 擴充**：新增 `iir_prev2_L` / `iir_prev2_R`（純 HLS 內部 static，不影響 AXI-Lite 介面合約）。
+  - **修改檔案**：`wobble.cpp`（B_LUT + 2nd-order IIR）、`effect_ip.h`（state_t）、`process_sample.cpp`（初始化）、`tb_process_sample.cpp`（testbench 初始化）。
+  - **待驗證**：HLS C-sim（13 cases PASS）、synthesis II=1、板上音訊驗聽。
 
 ---
 

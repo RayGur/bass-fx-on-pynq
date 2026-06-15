@@ -469,16 +469,17 @@ IP 外殼以 AXI-Stream 介面設計,使升級 DMA 時:運算核心(`process_sam
 ### 14.1 Wobble 效果深度不足（D26）
 
 **症狀**：wobble 掃動效果太細微，與 distortion 串接時尤為明顯。  
-**根因**：一階 IIR（6 dB/oct）rolloff 太緩；B_LUT 掃動範圍集中在中高頻，對 bass 基音（40–400 Hz）效果有限。  
-**優化方向**（依實作成本排序）：
+**根因**：B_LUT 低端 fc≈200 Hz 高於 bass 基音（41–98 Hz），LFO 最低值時基音仍在 passband；加上一階 IIR（6 dB/oct）斜率太緩，開合幅度有限。  
+**處置（2026-06-15）**：同時執行 B_LUT 調整 + 升 2nd-order IIR cascade。
 
-| 選項 | 成本 | 效果 |
-|------|------|------|
-| 調整 B_LUT 掃動下緣（推低至 20–2000 Hz） | 低（純軟體，改 `wobble.cpp`） | 讓 bass 基音進入掃動區 |
-| 升 2nd-order IIR（12 dB/oct） | 中（擴充 `state_t`，需確認 II=1） | rolloff 更陡，wah 感更強 |
-| 加諧振 Q factor | 高（架構改動大） | 最接近 wah pedal 感 |
+| 項目 | 說明 |
+|------|------|
+| B_LUT 新範圍 | 10–2000 Hz 對數等比（原 200–9300 Hz）；`wobble.cpp` |
+| 2nd-order cascade | 串聯兩級一階 IIR → 12 dB/oct；state_t 加 `iir_prev2_L/R` |
+| 效果 | 80 Hz bass 在 LFO 最低值時衰減 ~36 dB（原 ~0 dB） |
+| 介面影響 | state_t 為 HLS 內部 static，不動 AXI-Lite 寄存器表 |
 
-**建議**：先試 B_LUT 調整，成本最低且不影響合成 II。
+**待驗證**：HLS C-sim PASS → synthesis II=1 → 板上音訊驗聽。
 
 ### 14.2 Distortion 高 gain 雜訊放大（D27）
 
