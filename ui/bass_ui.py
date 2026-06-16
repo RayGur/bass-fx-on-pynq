@@ -497,7 +497,16 @@ class App:
         self.start_btn.config(state=tk.NORMAL)
 
     def _disconnect(self):
-        self._stop_fx()
+        """Initiate disconnect: disable buttons, stop FX then close SSH in background."""
+        self._set_status("● Disconnecting…", "#ffaa44")
+        self.conn_btn.config(state=tk.DISABLED)
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+        threading.Thread(target=self._run_disconnect, daemon=True).start()
+
+    def _run_disconnect(self):
+        """Background: stop FX (blocking), then close SSH."""
+        self._run_stop_fx()          # sends quit + pkill, waits for completion
         if self.ssh:
             try:
                 self.ssh.close()
@@ -505,10 +514,12 @@ class App:
                 pass
             self.ssh = None
         self._set_status("● Disconnected", C_DIM)
-        self.conn_btn.config(text="Connect", command=self._connect,
-                             bg="#1e2e1e", fg="#66cc66")
-        self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.DISABLED)
+        self.root.after(0, lambda: (
+            self.conn_btn.config(text="Connect", command=self._connect,
+                                 bg="#1e2e1e", fg="#66cc66", state=tk.NORMAL),
+            self.start_btn.config(state=tk.DISABLED),
+            self.stop_btn.config(state=tk.DISABLED),
+        ))
 
     # ── Start / stop FX ───────────────────────────────────────
 
@@ -752,8 +763,23 @@ class App:
     # ── Window close ─────────────────────────────────────────
 
     def _on_close(self):
-        self._disconnect()
-        self.root.destroy()
+        """Window close: stop FX and close SSH before destroying window."""
+        self._set_status("● Closing…", "#ffaa44")
+        self.conn_btn.config(state=tk.DISABLED)
+        self.start_btn.config(state=tk.DISABLED)
+        self.stop_btn.config(state=tk.DISABLED)
+
+        def _worker():
+            self._run_stop_fx()
+            if self.ssh:
+                try:
+                    self.ssh.close()
+                except Exception:
+                    pass
+                self.ssh = None
+            self.root.after(0, self.root.destroy)
+
+        threading.Thread(target=_worker, daemon=False).start()
 
 
 # ─────────────────────────────────────────────────────────────
