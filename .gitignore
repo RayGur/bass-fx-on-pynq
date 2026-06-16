@@ -55,6 +55,28 @@ build/
 relevant project/
 pynq_official/
 
+# PYNQ board IP library (too large, shared via PYNQ image)
+vivado/boards/
+
+# Vivado binary checkpoints / upgrade logs
+*.dcp
+vivado/**/ip_upgrade.log
+vivado/**/*.zip
+pynq_official.zip
+
+# Vivado block design synthesis utils (generated)
+vivado/**/utils_1/
+
+# Demo recordings
+demo/
+*.mp4
+
+# Claude Code local settings
+.claude/
+
+# Vitis HLS top-level logs (tracked by mistake)
+hls/effect_ip/vitis_hls.log
+
 # Docs scratch files
 docs/*.txt
 
