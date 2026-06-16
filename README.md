@@ -7,7 +7,7 @@
 以 Vitis HLS 合成自訂 Effect IP,在 PL 上實現兩個 bass 效果:
 
 - **Distortion** — hard clipping,AXI-Lite 即時調 threshold / gain
-- **Wobble** — 一階 IIR low-pass + LFO 掃頻,AXI-Lite 即時調 lfo_rate / lfo_depth
+- **Wobble** — 2nd-order IIR low-pass cascade + triangle LFO 掃頻,AXI-Lite 即時調 lfo_rate / lfo_depth / lfo_floor
 
 目標:現場彈奏 JB62 bass,透過板上 switch 與按鈕即時切換、調整效果,能從 amp 聽出差異。
 
@@ -30,8 +30,10 @@ JB62 → line-in → ADAU1761 codec
               └ DMA + 雙緩衝（Phase 6，C程式）
                       │  AXI-Stream
               Effect IP on PL (HLS, 100 MHz)
-              ├ distortion (hard clip, AXI-Lite threshold/gain)
-              └ wobble (1st-order IIR + LFO, AXI-Lite lfo_rate/lfo_depth)
+              ├ 60 Hz notch (always-on, r=0.9997)
+              ├ HPF Fc≈28 Hz (effect-conditional)
+              ├ wobble (2nd-order IIR LP sweep + triangle LFO, AXI-Lite lfo_rate/lfo_depth/lfo_floor)
+              └ distortion (hard clip + noise gate, AXI-Lite threshold/gain)
                       │
               ADAU1761 codec → HP-out → bass amp
 ```
@@ -45,10 +47,11 @@ JB62 → line-in → ADAU1761 codec
 | 0 | 環境 sanity check、bypass 出聲 | ✅ |
 | 1 | 最小 passthrough IP | ✅ |
 | 2 | Distortion（hard clip + AXI-Lite threshold/gain） | ✅ |
-| 3 | Wobble（IIR + LFO + AXI-Lite lfo_rate/lfo_depth） | ✅ |
+| 3 | Wobble（2nd-order IIR + LFO + AXI-Lite lfo_rate/lfo_depth/lfo_floor） | ✅ |
 | 4 | 按鈕切換 + AXI-Lite 調參（MVP） | ✅ |
 | 5 | 效果串接（sw[0]+sw[1] 同開） | ✅ |
 | 6 | A→B：DMA + 雙緩衝（必要步驟） | ✅ |
+| Post-MVP | 60 Hz notch、HPF、noise gate hysteresis、PC GUI（Tkinter）、串接順序修正 | ✅ |
 
 ## 文件
 
@@ -82,58 +85,43 @@ cp vivado/bass_fx/bass_fx.runs/impl_1/bass_fx_bd_wrapper.bit vivado/bass_fx_bd.b
 ### 2. 傳至板子
 
 ```bash
-scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/bass-fx/gpio/
-scp ps/audio_dma.c ps/codec_init.py xilinx@192.168.2.99:~/bass-fx/gpio/
+scp vivado/bass_fx_bd.bit vivado/bass_fx_bd.hwh xilinx@192.168.2.99:~/bass-fx/ui_dev_v2/
+scp ps/audio_dma.c ps/codec_init.py ps/start.sh xilinx@192.168.2.99:~/bass-fx/ui_dev_v2/
+scp ui/ctrl_client.py xilinx@192.168.2.99:~/bass-fx/ui_dev_v2/
 ```
 
-### 3. SSH 進板子
+### 3. 板上編譯
 
 ```bash
 ssh xilinx@192.168.2.99
+cd ~/bass-fx/ui_dev_v2
+gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma
 ```
 
-### 4. 板上編譯
+### 4a. 啟動（板上獨立模式）
 
 ```bash
-cd ~/bass-fx/gpio
-gcc audio_dma.c -lcma -lpthread -O2 -o audio_dma
+bash ~/bass-fx/ui_dev_v2/start.sh
 ```
 
-### 5. 執行
-
-> ⚠️ **全域前置條件：每次重開機後，執行任何 `audio_dma` 前都必須先跑 `codec_init.py`。**  
-> `audio_dma`（及所有 C 音訊程式）直接以 `/dev/mem` MMIO 存取硬體，不自行載入 bitstream 或初始化 codec。  
-> 跳過此步將在程式啟動時 Bus Error（GPIO / DMA / codec 位址不回應）。  
-> **此限制與 Phase 無關，適用於整個專案所有使用 `audio_dma` 的場景。**
-
-```bash
-# 【必須先跑】載入 overlay + 初始化 ADAU1761 codec
-sudo python3 codec_init.py
-
-# 啟動即時音訊處理
-sudo ./audio_dma
-```
+`start.sh` 自動處理 codec 初始化 + audio_dma 啟動，root-aware 不重複 sudo。
 
 **板上控制**（`audio_dma` 執行中）：
 - `sw[0]`（M20）：distortion on/off → LD4（RGB）亮滅
 - `sw[1]`（M19）：wobble on/off → LD5（RGB）亮滅
 - `btn[0]`（D19）：短按切換 distortion low ↔ high → led[0] 亮滅
 - `btn[1]`（D20）：短按切換 wobble slow ↔ fast → led[1] 亮滅
-- sw[0]+sw[1] 同開 = 效果串接（dist → wobble）
+- `btn[2]`（L20）：短按循環 wah depth preset A→B→C
+- sw[0]+sw[1] 同開 = 效果串接（wobble → dist）
 
-### 6. 即時調整效果參數（另開終端機）
+### 4b. 啟動（PC GUI 模式）
 
 ```bash
-sudo python3 -c "
-from pynq import MMIO; e = MMIO(0x40020000, 0x10000)
-e.write(0x18, 1)                     # dist_en=1（開 distortion）
-e.write(0x28, int(0.3*(1<<23)))      # threshold=0.3
-e.write(0x30, 8)                     # gain=8（1–20）
-e.write(0x20, 1)                     # wobble_en=1（開 wobble）
-e.write(0x38, 178957)                # lfo_rate≈2 Hz（= freq_hz × 89479）
-e.write(0x40, 100)                   # lfo_depth=100（0–100）
-"
+# PC 端（需 pip install paramiko）
+python3 ui/bass_ui.py
 ```
+
+GUI 透過 SSH 連線板子，支援 stomp 切換、旋鈕即時調參、btn/sw 雙向同步。
 
 
 ## 開發者
