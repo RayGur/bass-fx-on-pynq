@@ -124,16 +124,17 @@ sample_t apply_wobble(sample_t in, param_t lfo_rate, param_t lfo_depth,
                       param_t lfo_floor, state_t *state, bool is_l);
 ```
 
-### 串接邏輯（14.9 更新）
+### 串接邏輯（14.8 更新）
 
 ```
-in → Notch (always) → HPF (if dist_en||wobble_en) → Distortion+NoiseGate (if dist_en) → Wobble (if wobble_en) → out
+in → Notch (always) → HPF (if dist_en||wobble_en) → Wobble (if wobble_en) → Distortion+NoiseGate (if dist_en) → out
 ```
 
 - **Notch（60 Hz，always-on）**：IIR biquad，r=0.9997，BW≈4.6 Hz，直接消 60 Hz ground hum（r 從 0.9999 降至 0.9997 以縮短暫態 τ：208 ms→69 ms，減少 pick attack 後的 ringing 被 distortion 放大；A 弦 55 Hz 衰減仍 <1 dB，D36）。fresh state 下第一個 sample y[0]=x[0]，不影響 passthrough test。
 - **HPF（Fc≈28 Hz，effect-conditional）**：僅在 `dist_en || wobble_en` 時啟動，截 DC offset 防切換 thump。bypass 維持 true pass（HPF first-sample ≠ input）。
+- **Wobble（14.8 fix：移至 Distortion 前）**：wah LP sweep 先塑形音色，再由 distortion clip 並產生諧波。諧波不再被 wobble LP 濾掉，全 LFO 相位下 distortion 質感都能保留。先前 dist→wobble 的問題：wobble LP 在 LFO 波谷（fc≈83 Hz）時把所有 clipping 諧波濾掉，導致 attack 聽不到 distortion 效果（14.8）。
 - **Noise Gate（hysteresis，inside apply_distortion，14.2/14.9）**：open threshold=0.001（−60 dBFS），close threshold=0.0003（−70 dBFS）；gate 開啟後需振幅降到 0.0003 才關閉，防止弦振動衰減時在 0.001 附近反覆開關（chatter）。gate 狀態存於 `state.dist_gate_open_L/R`（D36）。⚠️ 板上實測 gate chatter 仍部分存在，可繼續優化。
-- **Distortion / Wobble**：同 Phase 5 串接，`dist_en` / `wobble_en` 分別控制，兩者皆 true 即串接。
+- **Distortion**：`dist_en` / `wobble_en` 分別控制，兩者皆 true 即串接（wobble → dist）。
 
 ### Wobble 參數編碼（Phase 3 定案）✅
 
@@ -316,3 +317,4 @@ HLS top function 新增兩個 AXI-Stream port，取代原有 in_l/in_r/out_l/out
 | 14.1 wobble 深度優化（2026-06-15）| B_LUT 換成 10–2000 Hz 對數等比（43–7569 Q15）；IIR 升 2nd-order cascade（12 dB/oct）；state_t 加 iir_prev2_L/R；新增 `lfo_floor` AXI-Lite 參數（offset 0x48）；`apply_wobble` 加 `param_t lfo_floor`；btn[2] 循環 wah depth preset A/B/C |
 | 14.2/14.7 noise gate + HPF + notch（2026-06-15）| 新增 `hpf.cpp`（Fc≈28 Hz HPF）、`notch.cpp`（60 Hz biquad notch，初版 r=0.9999）；state_t 擴增至 17 欄（+4 HPF + 8 Notch）；distortion 加 noise gate（0.001 hardcode）；AXI-Lite 位址表**不變** |
 | notch r 調整 + 14.9 gate hysteresis（2026-06-16）| notch r=0.9999→0.9997（τ 208 ms→69 ms，減少 ringing 被 distortion 放大；D36）；noise gate 改 hysteresis（open=0.001，close=0.0003）；`apply_distortion` 加 `state_t*, bool is_l`；state_t 擴增至 19 欄（+2 gate 狀態 bool）；AXI-Lite 位址表**不變** |
+| 14.8 串接順序 dist↔wobble 對調（2026-06-16）| 串接改為 wobble→dist（wah into fuzz）；修正：wobble LP（fc trough≈83 Hz）把 dist 諧波全濾掉，導致 wobble+dist 同開時 attack 聽不到 distortion 效果；對調後 distortion 是最後一級，諧波保留；`process_sample.cpp` 兩處修改（DMA loop + `process_sample_core`）；AXI-Lite 位址表、`state_t`、簽章**不變**；需 HLS re-synthesis + Vivado rebuild |
