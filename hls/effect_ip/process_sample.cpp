@@ -25,16 +25,20 @@ void process_sample_core(
         sig_r = apply_hpf(sig_r, /*is_l=*/false, state);
     }
 
+    // --- wobble (Phase 3) ---
+    // Wobble before distortion (14.8 fix): wah tone-shapes → dist clips shaped signal.
+    // Harmonics from clipping are NOT subsequently LP-filtered, preserving distortion
+    // character at all LFO phases (prior dist→wobble: wobble LP removed clipping harmonics
+    // during the trough, making attack sound clean with no distortion texture).
+    if (wobble_en) {
+        sig_l = apply_wobble(sig_l, lfo_rate, lfo_depth, lfo_floor, state, /*is_l=*/true);
+        sig_r = apply_wobble(sig_r, lfo_rate, lfo_depth, lfo_floor, state, /*is_l=*/false);
+    }
+
     // --- distortion (Phase 2, hysteresis noise gate inside apply_distortion) ---
     if (dist_en) {
         sig_l = apply_distortion(sig_l, threshold, gain, state, /*is_l=*/true);
         sig_r = apply_distortion(sig_r, threshold, gain, state, /*is_l=*/false);
-    }
-
-    // --- wobble (Phase 3) ---
-    if (wobble_en) {
-        sig_l = apply_wobble(sig_l, lfo_rate, lfo_depth, lfo_floor, state, /*is_l=*/true);
-        sig_r = apply_wobble(sig_r, lfo_rate, lfo_depth, lfo_floor, state, /*is_l=*/false);
     }
 
     *out_l = sig_l;
@@ -91,16 +95,20 @@ void process_sample(
             in_s = apply_hpf(in_s, is_l, &state);
         }
 
-        // --- distortion (Phase 2, hysteresis noise gate inside apply_distortion) ---
-        if (dist_en) {
-            out_s = apply_distortion(in_s, threshold, gain, &state, is_l);
+        // --- wobble (Phase 3) ---
+        // Wobble before distortion (14.8 fix): wah LP tone-shapes first, then dist
+        // clips the shaped signal and adds harmonics that are NOT subsequently filtered.
+        // Prior order (dist→wobble) had wobble LP removing all clipping harmonics,
+        // making attack sound clean when LFO was near its trough (fc≈83 Hz).
+        if (wobble_en) {
+            out_s = apply_wobble(in_s, lfo_rate, lfo_depth, lfo_floor, &state, is_l);
         } else {
             out_s = in_s;
         }
 
-        // --- wobble (Phase 3) ---
-        if (wobble_en) {
-            out_s = apply_wobble(out_s, lfo_rate, lfo_depth, lfo_floor, &state, is_l);
+        // --- distortion (Phase 2, hysteresis noise gate inside apply_distortion) ---
+        if (dist_en) {
+            out_s = apply_distortion(out_s, threshold, gain, &state, is_l);
         }
 
         audio_pkt_t out_pkt;
