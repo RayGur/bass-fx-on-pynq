@@ -54,6 +54,9 @@ dist_preset   = 0   # 0=L, 1=H
 wobble_preset = 0   # 0=slow, 1=fast
 wah_depth     = 0   # 0=A, 1=B, 2=C
 
+# ── Quit event (set by quit command; main loop exits on this) ──
+_quit_ev = threading.Event()
+
 # ── /dev/mem mmap ─────────────────────────────────────────────
 _devmem_fd  = None
 _effect_mm  = None
@@ -134,9 +137,9 @@ def handle_command(line):
         elif cmd == 'wobble_preset':
             wobble_preset = int(arg) & 1
         elif cmd == 'quit':
-            # Kill audio_dma (runs as root, so no sudo needed) then exit cleanly
+            # Kill audio_dma (runs as root, no sudo needed), then signal main loop to exit
             subprocess.run(['pkill', '-f', 'audio_dma'], check=False)
-            sys.exit(0)
+            _quit_ev.set()
     except (ValueError, OverflowError) as e:
         sys.stderr.write("[ctrl_client] bad cmd: {} ({})\n".format(line.strip(), e))
         sys.stderr.flush()
@@ -188,9 +191,8 @@ def main():
     t = threading.Thread(target=stdin_reader, daemon=True)
     t.start()
 
-    # Main polling loop: output STATE every 100 ms
-    # Exit when stdin closes (t finishes) so the process terminates cleanly.
-    while t.is_alive():
+    # Main polling loop: exits when stdin closes (t dies) or quit command received
+    while t.is_alive() and not _quit_ev.is_set():
         global dist_preset, wobble_preset, wah_depth
         sw  = read_gpio_sw()
         sw1 = (sw >> 1) & 1

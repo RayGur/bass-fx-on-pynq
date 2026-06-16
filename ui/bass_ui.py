@@ -712,17 +712,18 @@ class App:
             self.ctrl_stdin  = None
             self.ctrl_stdout = None
 
-        # 4. Fallback pkill in case quit command did not reach ctrl_client
+        # 4. Fallback pkill — kill both processes, wait for completion
         if self.ssh:
-            try:
-                kill_in, _, _ = self.ssh.exec_command(
-                    "sudo -S bash -c 'pkill -f ctrl_client.py;"
-                    " pkill -f audio_dma' 2>/dev/null; true",
-                    timeout=5)
-                kill_in.write(self._board_pass + "\n")
-                kill_in.flush()
-            except Exception:
-                pass
+            for target in ("ctrl_client.py", "audio_dma"):
+                try:
+                    ki, ko, _ = self.ssh.exec_command(
+                        f"sudo -S pkill -f {target} 2>/dev/null; true")
+                    ki.write(self._board_pass + "\n")
+                    ki.flush()
+                    ko.channel.recv_exit_status()   # block until pkill finishes
+                    print(f"[bass_ui] pkill {target}: done")
+                except Exception as e:
+                    print(f"[bass_ui] pkill {target}: {e}")
 
         self.fx_chan = None
         self._last_sw = "--"
