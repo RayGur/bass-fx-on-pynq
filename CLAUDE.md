@@ -81,19 +81,21 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - `ap_fixed<32,6>` 中間型別；threshold Q1.23 raw bit decode（需 `.range()`）
   - C Sim PASS（13 cases）、RTL Synthesis PASS（DSP×2, LUT 1%, 6.57 ns）
   - 技術債：threshold decode 記錄於 `docs/phase2.md`
-- ✅ **Phase 3**：wobble（一階 IIR + LFO 掃頻）— 完成（整合於 Phase 6 branch）
-  - Claire 演算法（B_LUT 16 entries Q15，triangle LFO，一階 IIR）整合進 Phase 6 AXI-Stream HLS
-  - `state_t` 分 `iir_prev_L` / `iir_prev_R`（ap_fixed<32,2>）；`apply_wobble` 加 `bool is_l`
-  - HLS 合成：II=1 達成；timing violation -3.08 ns 在 AXI-Lite wrapper（Vivado P&R 可解）
-  - `wobble_dma_test.py` 板上驗證 PASS（L[0]=b×in 精確，state 跨 DMA 保留）
-  - 實際音訊測試 PASS（`audio_dma.c` + codec，lfo_rate/depth 可熱改）
-  - **Post-MVP 優化待辦**：wobble 深度不足（D26）、distortion 底噪放大（D27）— 見 `docs/decisions.md`
+- ✅ **Phase 3**：wobble（2nd-order IIR cascade + LFO 掃頻）— 完成（整合於 Phase 6 branch；14.1 升級）
+  - Claire 演算法（B_LUT 16 entries Q15，triangle LFO）整合進 Phase 6 AXI-Stream HLS
+  - `state_t` 分 `iir_prev_L/R`（stage-1）+ `iir_prev2_L/R`（stage-2，14.1 新增）
+  - `apply_wobble` 加 `bool is_l`、`param_t lfo_floor`（14.1 新增，wah depth preset）
+  - 14.1 優化（2026-06-15）：B_LUT 換成 10–2000 Hz 對數等比；升 2nd-order IIR（12 dB/oct）；新增 `lfo_floor` AXI-Lite 參數（offset 0x48，btn2 切換 A/B/C preset）
+  - 14.1 驗證全 PASS（2026-06-15）：HLS C-sim PASS、synthesis II=1、Vivado rebuild、板上三個 preset（A/B/C）音訊驗聽 PASS
+  - **Post-MVP 14.2/14.7（2026-06-15 實作，板上驗聽 PASS）**：60 Hz notch（r=0.9997，BW≈4.6 Hz，r 從 0.9999 降低以縮短 ringing τ 208 ms→69 ms）+ HPF（Fc≈28 Hz）+ noise gate；state_t 擴增至 19 欄（含 gate hysteresis 狀態 bool L/R）；AXI-Lite 介面不變
+  - **Post-MVP 14.9（2026-06-16 實作）**：noise gate hysteresis（open=0.001，close=0.0003）；板上驗聽 gate chatter 仍存在，可繼續優化
+  - **Post-MVP 14.10/14.11（2026-06-16 記錄）**：13 秒週期茲擦（PS 端原因未查明）；碰弦茲擦（類比前端 EMI，已知限制）
 - ✅ **Phase 4 + 5**：GPIO 控制迴路（sw/btn/LED/RGB LD4+LD5）+ 效果串接 — **MVP 完成**（branch: `feat/gpio`）
-  - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset
+  - sw[0/1] 即時切換 dist_en/wobble_en；btn[0/1] debounce 切換 low/high preset；btn[2] 循環 wah depth preset A/B/C（14.1 新增）
   - RGB LD4/LD5 顯示 switch 狀態；led[0/1] 顯示 preset 強度
   - axi_gpio_2（0x4003_0000）新增至 BD；hw_cons.xdc 補 6 pin（port: `rgbleds_tri_o_tri_o`）
-  - **前置**：每次執行前需先 `sudo python3 codec_init.py`（載入 overlay + 初始化 codec）
-  - Post-MVP 待辦：LED 亮度（14.3）、KRK 喇叭 crash（14.4）、啟動整合腳本（14.5）— 見 `docs/bass_fx_project_plan.md`
+  - ~~前置：每次執行前需先 `sudo python3 codec_init.py`~~（14.5 後改用 `bash start.sh`）
+  - Post-MVP 待辦：LED 亮度（14.3）、KRK 喇叭 crash（14.4）— 見 `docs/bass_fx_project_plan.md`
 - ✅ **Phase 6**：A→B 升級（C + DMA + 雙緩衝）— **完成**（branch: `phase6/wobble`）
   - 架構定案：C + DMA（見 D18–D21，`docs/phase6.md`）
   - 板上確認：`pynq.allocate()` 可用、gcc 7.3.0 可用
@@ -101,6 +103,22 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - BUG 修復：D23（TKEEP=0）、D24（II=2 → R channel 不寫）、D25（HP0 64-bit 交錯寫）
   - DMA pipeline + codec 音訊驗證全部 PASS
   - 板上工作目錄：`~/bass-fx/wobble_dma/`；compile：`gcc audio_dma.c -lcma -lpthread -O2`
+- 🚧 **feat/ui**：PC-side GUI（Tkinter + paramiko）— **開發中 2026-06-16**（branch: `feat/ui`）
+  - **14.5** ✅：`start.sh` 合一啟動（codec_init.py + audio_dma），root-aware 不重複 sudo
+  - **14.6** ✅：`audio_dma.c` 清理（移除 diag/cross-verify/sentinel），加 `-DNDEBUG`，compile PASS
+  - **GPIO 共存（雙向）** ✅：sw GPIO 永遠寫入 Effect IP（GPIO 為 master），UI stomp 顯示 sw 即時狀態；stomp click 仍可寫入但 ~5.33 ms 內被 GPIO 覆蓋
+  - **ctrl_client.py** ✅：板上 AXI-Lite 控制代理，STATE stdout 100ms 輸出，sentinel 管理；板上 sudo -S 測試 PASS
+  - **bass_ui.py** ✅：吉他踏板盤 Tkinter GUI，paramiko SSH 雙 channel，ssh 連線測試 PASS
+  - **14.12** ✅：btn[0/1/2] → UI 雙向同步（板上驗聽 PASS）
+    - `ctrl_client.py`：主迴圈每 100ms readback THRESHOLD / LFO_RATE / LFO_FLOOR 暫存器，推斷 preset 索引寫入 STATE
+    - `bass_ui.py`：`_parse_state()` 解析 dist_preset / wobble_preset / wah 欄位；新增三個 `_set_*_preset_btn()` helper 更新按鈕高亮與旋鈕（不送命令）
+  - **14.13** ✅：Stop / Disconnect / 關窗生命週期修復（板上驗聽 PASS）
+    - `ctrl_client.py`：加 `quit` command → `pkill audio_dma` + `_quit_ev.set()`；主迴圈改 `while t.is_alive() and not _quit_ev.is_set()` 讓 stdin EOF 或 quit 皆可乾淨退出
+    - `bass_ui.py`：`_stop_fx()` → background `_run_stop_fx()`（送 quit → 0.5s → fallback pkill with `recv_exit_status` 等完成）；`_disconnect()` → background `_run_disconnect()`（blocking stop → close SSH）；`_on_close()` → background worker（同上，完成後 `root.destroy()`）
+  - 板上工作目錄：`~/bass-fx/ui_dev/`；compile：`gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma`
+  - **啟動方式（UI 模式）**：`python3 ui/bass_ui.py`（PC 端，需 pip install paramiko）
+  - **啟動方式（獨立）**：`bash ~/bass-fx/ui_dev/start.sh`（板上互動 session）
+  - ~~剩餘風險：端到端音訊互動測試~~ → 板上驗聽 PASS
 
 > 進度隨開發更新。
 

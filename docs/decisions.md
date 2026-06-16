@@ -471,6 +471,32 @@
   - C）加諧振（Q factor）：在截止頻率附近加 boost，wah 感更強，但設計複雜度大增。
   - **建議先試 B**：修改 B_LUT 成本最低（純軟體），無需改 HLS 架構，不影響 II。
 - **影響範圍**：`hls/effect_ip/wobble.cpp`（B_LUT 調整）或 `process_sample.cpp`（2nd-order state 擴充）。
+- **處置（2026-06-15，14.1 fix）**：同時執行 A + B，理由如下：
+  - 實測確認問題本質是「震幅不足」而非頻率偏移：低頻確有波動，但開合幅度太小。
+  - 根因一（B_LUT 低端 fc≈200 Hz 高於 bass 基音 41–98 Hz）為主因：當 LFO 在最低值時，bass 基音仍在 passband，未被衰減，所以「有波動但不夠深」。
+  - 同時採用 2nd-order cascade 增加斜率，讓開合幅度更明顯（36 dB vs 18 dB）。
+  - **B_LUT 新範圍**：10–2000 Hz 對數等比（公式 `b = 1 - exp(-2π·fc/48000)`），16 點。
+  - **state_t 擴充**：新增 `iir_prev2_L` / `iir_prev2_R`（純 HLS 內部 static，不影響 AXI-Lite 介面合約）。
+  - **修改檔案**：`wobble.cpp`（B_LUT + 2nd-order IIR）、`effect_ip.h`（state_t）、`process_sample.cpp`（初始化）、`tb_process_sample.cpp`（testbench 初始化）。
+  - **後續追加（同日）**：實測波谷無聲 → 新增 `lfo_floor` AXI-Lite 參數（見 D28）；btn2 循環三種 wah depth preset。
+  - **驗證（2026-06-15）**：HLS C-sim PASS、synthesis II=1（lfo_floor offset 0x48 確認）、Vivado rebuild PASS、板上三個 preset（A/B/C）音訊驗聽全 PASS。
+
+---
+
+## D28. wah depth preset runtime 切換：lfo_floor 參數設計（2026-06-15）
+
+- **背景**：14.1 fix 後 B_LUT 低端 fc=10 Hz，2nd-order 在波谷時把 bass 基音壓到 ~−36 dB（近無聲）。實測偏好保留波谷聲音，需能在不同深度間切換。
+- **選項比較**：
+  - A）多張 B_LUT + `wah_mode` 選擇器：每個 preset 有獨立 LUT，切換乾淨，但 HLS 資源用多一倍（16×N 個 ROM entry），且需再加一個 AXI-Lite 參數。
+  - B）`lfo_floor` 參數（最小 LUT index）：保留現有單張 10–2000 Hz 寬範圍 B_LUT，靠 `lut_idx = max(lfo_floor, computed_idx)` 抬高波谷；只需一個新參數，HLS 資源不增。
+- **決定**：選 B（`lfo_floor`）。
+- **理由**：HLS 資源省一半；B_LUT 保留完整範圍方便未來調整；PS 端可用任意整數（0–15）設定波谷，不限三段。
+- **Preset 對應**（btn2 循環 A→B→C）：
+  - A（default）：floor=6，fc≈83 Hz，波谷 −6 dB，bass 可聽
+  - B：floor=4，fc≈41 Hz，波谷 −18 dB，很暗
+  - C：floor=0，fc=10 Hz，波谷 −36 dB，近無聲
+- **AXI-Lite offset**：0x48（HLS 按參數順序分配，synthesis 後由 `csynth.rpt` 確認）。
+- **影響範圍**：`wobble.cpp`（floor clamping）、`effect_ip.h`（所有簽章）、`process_sample.cpp`（pragma + 傳遞）、`tb_process_sample.cpp`（call sites）、`ps/audio_dma.c`（offset + preset + btn2）、`docs/INTERFACE.md`（AXI-Lite 表、btn[2]）。
 
 ---
 
@@ -487,7 +513,51 @@
 
 ---
 
-## 待補決策(後續 Phase 產生)
+## D32. 60 Hz Notch r 值選 0.9997（2026-06-15 初選 0.9999，2026-06-16 改 0.9997）
 
-- low/high 參數的實際數值（Phase 4，調出好聽範圍）。
-- Phase 4 按鈕對應的效果切換邏輯與預設參數組設計。
+- **背景**：板上實測接地線只略改善 hum，數位方案需精準打 60 Hz。選 r 值需在 notch 帶寬與 bass 音色之間取平衡。
+- **初版決定（2026-06-15）**：r = 0.9999，帶寬（−3 dB）≈ 1.5 Hz（= (1−r) × 48000 / π）。理由：r=0.999 → BW 15 Hz → −3 dB 點落 52.4 Hz，A 弦（55 Hz）被衰減 ~3 dB（不可接受）；r=0.9999 → −3 dB 點 58.5–61.5 Hz，55 Hz 幾乎無影響。
+- **修正（2026-06-16）**：板上實測 pick attack 後約 0.2 s 出現滋擦聲，確認為 notch 高 Q 暫態 ringing（τ = 1/(1−r) = 10,000 samples ≈ 208 ms）被 distortion 放大所致。降 r 至 0.9997 → τ = 3,333 samples ≈ 69 ms（縮短 3×），ringing 明顯減輕。
+- **最終決定**：r = 0.9997，BW ≈ 4.6 Hz，−3 dB 點 57.7–62.3 Hz。A 弦（55 Hz）衰減 ≈ 0.82 dB（<1 dB，distortion 情境下幾乎不可感知）。60 Hz 精確零點與 r 無關，hum 消除效果不受影響。
+- **影響**：`hls/effect_ip/notch.cpp` — NOTCH_A1/A2 係數（B1 不變）。
+
+---
+
+## D33. Notch always-on vs conditional（2026-06-15）
+
+- **背景**：HPF 在 bypass 時若 always-on，第一個 sample output ≠ input，破壞 passthrough test 的精確等值比較（out == in）。Notch 是否有同樣問題？
+- **決定**：Notch **always-on**（無條件啟動）；HPF **conditional on dist_en || wobble_en**。
+- **理由**：Direct Form I biquad 在所有 state 為 0 的 fresh state 下，第一個 sample：`y[0] = x[0] + b1×0 + 0 − a1×0 − a2×0 = x[0]`，即輸出等於輸入。passthrough test 只呼叫一次（fresh state），因此 notch 不影響 passthrough 結果。HPF 則是 `y[0] = alpha × x[0] ≠ x[0]`，需要條件限制。
+- **影響**：`process_sample.cpp` — notch 在 loop 最前端無條件呼叫；HPF 包在 `if (dist_en || wobble_en)` 內。
+
+---
+
+## D34. HPF conditional on dist_en||wobble_en（2026-06-15）
+
+- **背景**：HPF 的 first-sample output = alpha × x ≠ x（alpha ≈ 0.9963），若 always-on 會使 bypass 路徑出現微小衰減，破壞 testbench passthrough test。
+- **決定**：HPF 僅在 `dist_en || wobble_en` 時啟動。
+- **語意優勢**：true bypass（兩個效果皆關）確實等於輸入，符合使用者預期的「乾聲監聽」。
+- **影響**：`process_sample.cpp` `hpf.cpp`。
+
+---
+
+## D35. Noise gate 0.001 hardcode（2026-06-15）
+
+- **背景**：板上接地線略改善後，hum 仍在 ≈ −60 dBFS 量級；distortion gain 放大時靜音期 hum 變得明顯（14.2）。是否需要 AXI-Lite 動態調整？
+- **決定**：hardcode 0.001（= −60 dBFS，Q1.23 = 8389/2^23）。
+- **理由**：新增 AXI-Lite 參數需更新 INTERFACE.md、通知 Claire、PS 端加 preset 值，成本超過效益。板上 hum 量級穩定在此範圍，固定值直接有效。若日後需要調整，屆時再升 AXI-Lite 參數（影響範圍小）。
+- **影響**：`hls/effect_ip/distortion.cpp`。
+
+---
+
+## D36. Noise gate hysteresis：open/close 雙 threshold（2026-06-16）
+
+- **背景**：14.2 加入 hard gate（單一 threshold 0.001）後，板上實測 sustain 音符衰減時音色「裂開」（滋渣、越來越碎）。
+- **根因**：弦振動振幅衰減到 0.001 附近時，正弦波峰值 > 0.001（gate 開）而零點附近 < 0.001（gate 關），每週期開關兩次，把波形切成碎片（gate chatter），產生大量諧波。
+- **決定**：改為 hysteresis gate，open threshold = 0.001（同前），close threshold = 0.0003（≈ −70 dBFS）。gate 開啟後需振幅降到 0.0003 才關閉，音符可自然衰減通過原 0.001 門檻而不被切斷。gate 狀態存於 `state_t.dist_gate_open_L/R`（bool per channel）。
+- **影響**：`distortion.cpp`（logic）、`effect_ip.h`（簽章 + state_t）、`process_sample.cpp`（呼叫帶入 state/is_l）、`tb_process_sample.cpp`（state init 17→19 欄）。
+- **板上驗聽結果（2026-06-16）**：gate chatter 情況與前版相近，改善不明顯；問題仍存在，可繼續優化（如更長的 hold-off timer、envelope follower、或提高 close threshold 至 0.0005）。
+
+---
+
+## 待補決策(後續 Phase 產生)
