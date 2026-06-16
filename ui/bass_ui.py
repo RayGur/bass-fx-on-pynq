@@ -28,7 +28,7 @@ except ImportError:
     sys.exit(1)
 
 # ── Board paths ───────────────────────────────────────────────
-BOARD_WORKDIR = "/home/xilinx/bass-fx/ui_dev_v2"
+BOARD_WORKDIR = "/home/xilinx/bass-fx/demo"
 # sudo -S reads password from stdin; start.sh avoids inner-sudo when root;
 # ctrl_client.py stdin receives the password line first, then effect commands.
 CTRL_CMD = f"sudo -S python3 {BOARD_WORKDIR}/ctrl_client.py"
