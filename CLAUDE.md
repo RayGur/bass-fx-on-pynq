@@ -112,10 +112,9 @@ PYNQ-Z2 上的即時 bass 數位效果器。效果運算(distortion / wobble)以
   - **14.12** ✅：btn[0/1/2] → UI 雙向同步（板上驗聽 PASS）
     - `ctrl_client.py`：主迴圈每 100ms readback THRESHOLD / LFO_RATE / LFO_FLOOR 暫存器，推斷 preset 索引寫入 STATE
     - `bass_ui.py`：`_parse_state()` 解析 dist_preset / wobble_preset / wah 欄位；新增三個 `_set_*_preset_btn()` helper 更新按鈕高亮與旋鈕（不送命令）
-  - **14.13** ⏳ 待測試：Stop FX 生命週期修復
-    - `ctrl_client.py`：加 `quit` command → `pkill audio_dma` + `sys.exit(0)`（root 身份執行，不需 sudo）；主迴圈改 `while t.is_alive()` 讓 stdin EOF 也能乾淨退出
-    - `bass_ui.py`：`_stop_fx()` 改為立即 disable 按鈕 + 啟動 background thread `_run_stop_fx()`；先送 `quit\n` 給 ctrl_client，0.5s 後補 fallback `sudo -S pkill`
-    - 預期行為：Stop → 音訊停止 → 可重新 Start FX 不 crash
+  - **14.13** ✅：Stop / Disconnect / 關窗生命週期修復（板上驗聽 PASS）
+    - `ctrl_client.py`：加 `quit` command → `pkill audio_dma` + `_quit_ev.set()`；主迴圈改 `while t.is_alive() and not _quit_ev.is_set()` 讓 stdin EOF 或 quit 皆可乾淨退出
+    - `bass_ui.py`：`_stop_fx()` → background `_run_stop_fx()`（送 quit → 0.5s → fallback pkill with `recv_exit_status` 等完成）；`_disconnect()` → background `_run_disconnect()`（blocking stop → close SSH）；`_on_close()` → background worker（同上，完成後 `root.destroy()`）
   - 板上工作目錄：`~/bass-fx/ui_dev/`；compile：`gcc audio_dma.c -lcma -lpthread -O2 -DNDEBUG -o audio_dma`
   - **啟動方式（UI 模式）**：`python3 ui/bass_ui.py`（PC 端，需 pip install paramiko）
   - **啟動方式（獨立）**：`bash ~/bass-fx/ui_dev/start.sh`（板上互動 session）
